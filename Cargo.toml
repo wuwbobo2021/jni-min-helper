@@ -1,0 +1,45 @@
+[package]
+name = "jni-min-helper"
+version = "0.1.0"
+authors = ["wuwbobo2021 <wuwbobo@outlook.com>"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/wuwbobo2021/jni-min-helper"
+readme = "README.md"
+description = """
+Minimal helper for `jni-rs`, supporting dynamic proxies, Android dex
+embedding and broadcast receiver. Used for calling Java code from Rust.
+"""
+keywords = ["java", "android", "proxy", "invocation"]
+categories = ["api-bindings"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 16
+target_sdk_version = 30
+
+[package.metadata.docs.rs]
+default-target = "aarch64-linux-android"
+targets = [
+    "aarch64-linux-android",
+    "i686-pc-windows-msvc",
+    "i686-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu"
+]
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+jni = { version = "0.21.1", features = ["invocation"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+log = "0.4"
+jni = { version = "0.21.1" }
+ndk-context = "0.1"
+
+[build-dependencies]
+android-build = "0.1.0"
+java-locator = "0.1.8"
+
+[lib]
+name = "jni_min_helper"
+path = "lib.rs"
