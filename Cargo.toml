@@ -1,6 +1,6 @@
 [package]
 name = "jni-min-helper"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["wuwbobo2021 <wuwbobo@outlook.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"

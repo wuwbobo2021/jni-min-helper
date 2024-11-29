@@ -9,6 +9,8 @@ Documentation: <https://docs.rs/jni-min-helper/latest>.
 
 The dynamic proxy implementation is inspired by [droid-wrap-utils](https://crates.io/crates/droid-wrap-utils). `droid-wrap` is another project with greater ambition, however the initial version is less reliable.
 
+Check the source of this crate to see how dex files can be embedded. Note: `InvocHdl.class` and `classes.dex` are *unmanaged* prebuilt files for docs.rs to build documentation successfully. `build.rs` will print a warning and use the prebuilt file as a fallback on failure. 
+
 ## Desktop
 
 To test it on a desktop OS, just make sure the JDK is installed, then add `jni-min-helper` dependency into your new crate, fill in `main()` with the example given in `jni_min_helper::jni_create_proxy()` documentation.
