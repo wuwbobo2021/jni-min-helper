@@ -1,15 +1,20 @@
 //! Minimal helper for `jni-rs`, supporting dynamic proxies, Android dex
 //! embedding and broadcast receiver. Used for calling Java code from Rust.
 //!
-//! `jni` is re-exported here for the user to import `jni` functions from
-//! here, avoiding version inconsistency between `jni` and this crate.
+//! `jni` is re-exported here for the user to import `jni` functions, avoiding
+//! version inconsistency between `jni` and this crate.
+//!
+//! This crate uses `ndk_context::AndroidContext` on Android, usually initialized
+//! by `android_activity`. Examples for Android are provided in the crate page.
 //!
 //! Please make sure you are viewing documentation generated for your target.
-//! Examples for Android are provided in the crate page.
 
 pub use jni;
 
 pub use {convert::*, loader::*, proxy::*};
+
+#[cfg(target_os = "android")]
+pub use receiver::*;
 
 #[cfg(not(target_os = "android"))]
 macro_rules! warn {
@@ -25,17 +30,68 @@ mod convert;
 mod loader;
 mod proxy;
 
+#[cfg(target_os = "android")]
+mod receiver;
+
 use jni::{
     errors::Error,
     objects::{GlobalRef, JObject},
-    JNIEnv,
+    AttachGuard, JNIEnv, JavaVM,
 };
-use std::cell::Cell;
+use std::{cell::Cell, sync::OnceLock};
 
 type AutoLocal<'a> = jni::objects::AutoLocal<'a, JObject<'a>>;
 
+static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
+
 thread_local! {
     static LAST_CLEARED_EX: Cell<Option<GlobalRef>> = const { Cell::new(None) };
+}
+
+/// Attaches the current thread to the JVM after `jni_get_vm()`.
+///
+/// Reference:
+/// <https://docs.rs/jni/latest/jni/struct.JavaVM.html#method.attach_current_thread>
+#[inline(always)]
+pub fn jni_attach_vm<'a>() -> Result<AttachGuard<'a>, Error> {
+    jni_get_vm().attach_current_thread()
+}
+
+/// Tells this crate to use an existing JVM, instead of launching a new JVM
+/// with no arguments (which may panic on failure). Not available on Android.
+#[cfg(not(target_os = "android"))]
+pub fn jni_set_vm(vm: &JavaVM) -> bool {
+    if JAVA_VM.get().is_some() {
+        false
+    } else {
+        // Safety: #[derive(Clone)] is to be added for struct JavaVM(*mut sys::JavaVM),
+        // also check the source code of JNIEnv::get_java_vm().
+        let vm = unsafe { JavaVM::from_raw(vm.get_java_vm_pointer()).unwrap() };
+        JAVA_VM.set(vm).unwrap();
+        true
+    }
+}
+
+/// Gets the remembered `JavaVM`, otherwise it launches a new JVM with no arguments
+/// (which may panic on failure).
+#[cfg(not(target_os = "android"))]
+#[inline(always)]
+pub fn jni_get_vm() -> &'static JavaVM {
+    JAVA_VM.get_or_init(|| {
+        let args = jni::InitArgsBuilder::new().build().unwrap();
+        JavaVM::new(args).unwrap()
+    })
+}
+
+/// Gets the `JavaVM` from current Android context.
+#[cfg(target_os = "android")]
+#[inline(always)]
+pub fn jni_get_vm() -> &'static JavaVM {
+    JAVA_VM.get_or_init(|| {
+        let ctx = ndk_context::android_context();
+        // Safety: as documented in `ndk-context` to obtain the `jni::JavaVM`
+        unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.unwrap()
+    })
 }
 
 /// It calls `JNIEnv::exception_clear()` which is needed for handling Java exceptions,
@@ -60,8 +116,8 @@ pub fn jni_clear_ex_ignore(err: Error) -> Error {
     jni_clear_ex_inner(err, false, false)
 }
 
-/// Takes away the stored global reference of `java.lang.Throwable` of the last
-/// Java exception cleared inside this crate.
+/// Takes away the stored reference of `java.lang.Throwable` of the last
+/// Java exception cleared inside this crate (current thread).
 #[inline(always)]
 pub fn jni_last_cleared_ex() -> Option<GlobalRef> {
     LAST_CLEARED_EX.take()
@@ -85,11 +141,14 @@ fn jni_clear_ex_inner(err: Error, print_ex: bool, store_ex: bool) -> Error {
             if let Ok(ex) = ex.global_ref(env) {
                 #[cfg(target_os = "android")]
                 if print_ex {
+                    let thread_id = std::thread::current().id();
                     if let Ok(ex_msg) = ex.get_throwable_msg(env) {
-                        let thread_id = std::thread::current().id();
                         let ex_type = class_name_to_java(&ex.get_class_name(env).unwrap());
                         warn!("Exception in thread \"{thread_id:?}\" {ex_type}: {ex_msg}");
+                    } else {
+                        warn!("Unknown Java exception in thread \"{thread_id:?}\"");
                     }
+                    warn!("{}", std::backtrace::Backtrace::force_capture());
                 }
                 if store_ex {
                     // prepare for `jni_last_cleared_ex()`
@@ -133,6 +192,11 @@ where
         env.new_global_ref(local)
     }
 }
+
+// `impl<'a> JObjectAutoLocal<'a> for Result<AutoLocal<'a>, Error>`
+// will cause a compilation error of conflicting implementation:
+// upstream crates may add a new impl of trait `std::convert::From<AutoLocal<'a>>`
+// for type `jni::objects::JObject<'_>` in future versions.
 
 /// Converts an `AutoLocal<'_>` to an `GlobalRef`.
 pub trait AutoLocalGlobalize<'a> {

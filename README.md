@@ -9,11 +9,11 @@ Documentation: <https://docs.rs/jni-min-helper/latest>.
 
 The dynamic proxy implementation is inspired by [droid-wrap-utils](https://crates.io/crates/droid-wrap-utils). `droid-wrap` is another project with greater ambition, however the initial version is less reliable.
 
-Check the source of this crate to see how dex files can be embedded. Note: `InvocHdl.class` and `classes.dex` are *unmanaged* prebuilt files for docs.rs to build documentation successfully. `build.rs` will print a warning and use the prebuilt file as a fallback on failure. 
+Check the source of this crate to see how a dex file can be embedded. Note: `InvocHdl.class` and `classes.dex` are *unmanaged* prebuilt files for docs.rs to build documentation successfully. `build.rs` will print a warning and use the prebuilt file as a fallback on failure. 
 
 ## Desktop
 
-To test it on a desktop OS, just make sure the JDK is installed, then add `jni-min-helper` dependency into your new crate, fill in `main()` with the example given in `jni_min_helper::jni_create_proxy()` documentation.
+To test it on a desktop OS, just make sure the JDK is installed, then add `jni-min-helper` dependency into your new binary crate, fill in `main()` with the example given in `jni_min_helper::JniProxy` documentation.
 
 Of course, the dex class loader and the broadcast receiver are not available. Call `jni_set_vm()` (before using other functions) to prevent the library from creating a new JVM by itself.
 
@@ -32,7 +32,7 @@ publish = false
 
 [dependencies]
 log = "0.4"
-jni-min-helper = "0.1"
+jni-min-helper = "0.2"
 android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.14"
 
@@ -66,7 +66,7 @@ fn android_main(app: AndroidApp) {
             .with_tag(android_app_name().as_bytes()),
     );
 
-    let receiver = jni_create_broadcast_receiver(on_receive).unwrap();
+    let receiver = BroadcastReceiver::build(on_receive).unwrap();
     receiver
         .register_for_action("android.net.conn.CONNECTIVITY_CHANGE")
         .unwrap();
@@ -93,11 +93,10 @@ fn on_receive<'a>(
     let action = env
         .call_method(intent, "getAction", "()Ljava/lang/String;", &[])
         .get_object(env)?
-        .get_string(env)?
-        .unwrap();
+        .get_string(env)?;
     log::info!("Received an intent of action '{action}'.");
 
-    let connectivity_service = "connectivity".create_jobject(env)?;
+    let connectivity_service = "connectivity".new_jobject(env)?;
 
     let conn_man = env
         .call_method(
@@ -131,7 +130,7 @@ fn on_receive<'a>(
     };
     log::info!("{msg}");
 
-    let msg = msg.create_jobject(env)?;
+    let msg = msg.new_jobject(env)?;
     let toast = env
         .call_static_method(
             "android/widget/Toast",
@@ -141,6 +140,63 @@ fn on_receive<'a>(
         )
         .get_object(env)?;
     env.call_method(&toast, "show", "()V", &[]).clear_ex()
+}
+```
+
+Or use the `futures-lite` blocker of the asynchronous broadcast waiter:
+
+```toml
+jni-min-helper = { version = "0.2", features = ["futures"] }
+```
+
+```rust
+use android_activity::{AndroidApp, MainEvent, PollEvent};
+use jni_min_helper::*;
+use std::time::Duration;
+
+#[no_mangle]
+fn android_main(app: AndroidApp) {
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Info)
+            .with_tag(android_app_name().as_bytes()),
+    );
+
+    std::thread::spawn(background_loop);
+
+    let mut on_destroy = false;
+    loop {
+        app.poll_events(None, |event| match event {
+            PollEvent::Main(MainEvent::Destroy) => {
+                on_destroy = true;
+            }
+            _ => (),
+        });
+        if on_destroy {
+            return;
+        }
+    }
+}
+
+fn background_loop() {
+    let mut waiter = BroadcastWaiter::build([
+        "android.intent.action.TIME_TICK",
+        "android.net.conn.CONNECTIVITY_CHANGE",
+    ])
+    .unwrap();
+    log::info!("Built broadcast waiter.");
+    loop {
+        if let Some(intent) = waiter.wait_timeout(Duration::from_secs(1)) {
+            let env = &mut jni_attach_vm().unwrap();
+            let action = env
+                .call_method(intent, "getAction", "()Ljava/lang/String;", &[])
+                .get_object(env)
+                .unwrap()
+                .get_string(env)
+                .unwrap();
+            log::info!("Received an intent of action '{action}'.");
+        }
+    }
 }
 ```
 
@@ -207,7 +263,7 @@ fn chooser_dialog<'a>(
     };
     use std::sync::{mpsc, Arc, Mutex};
     let env = &mut jni_attach_vm()?;
-    let context = jni_android_context();
+    let context = android_context();
 
     // creates the dialog builder
     let dialog_builder = env
@@ -218,7 +274,7 @@ fn chooser_dialog<'a>(
         )
         .auto_local(env)?;
 
-    let title = title.create_jobject(env)?;
+    let title = title.new_jobject(env)?;
 
     // converts choice items to Java array
     let choice_items = env
@@ -226,7 +282,7 @@ fn chooser_dialog<'a>(
         .auto_local(env)?;
     let choice_items: &JObjectArray<'_> = choice_items.as_ref().into();
     for (i, choice_name) in choices.iter().enumerate() {
-        let choice_name = choice_name.create_jobject(env)?;
+        let choice_name = choice_name.new_jobject(env)?;
         env.set_object_array_element(choice_items, i as jsize, &choice_name)
             .unwrap();
     }
@@ -235,27 +291,27 @@ fn chooser_dialog<'a>(
     let tx2 = tx1.clone();
 
     // creates OnClickListener
-    let on_click_listener = jni_create_proxy(
-        ["android/content/DialogInterface$OnClickListener"],
+    let on_click_listener = JniProxy::build(
         None,
+        ["android/content/DialogInterface$OnClickListener"],
         move |env, method, args| {
             if method.get_method_name(env)? == "onClick" {
                 let _ = tx1.send(Some(args[1].get_int(env)?));
             }
-            jni_return_void(env)
+            JniProxy::void(env)
         },
     )
     .unwrap();
 
     // creates OnDismissListener
-    let on_dismiss_listener = jni_create_proxy(
-        ["android/content/DialogInterface$OnDismissListener"],
+    let on_dismiss_listener = JniProxy::build(
         None,
+        ["android/content/DialogInterface$OnDismissListener"],
         move |env, method, _| {
             if method.get_method_name(env)? == "onDismiss" {
                 let _ = tx2.send(None);
             }
-            jni_return_void(env)
+            JniProxy::void(env)
         },
     )
     .unwrap();
@@ -319,12 +375,12 @@ fn post_on_java_main_thread(
 ) -> Result<Option<JniProxy>, jni::errors::Error> {
     let env = &mut jni_attach_vm()?;
 
-    let runnable = jni_create_proxy(["java/lang/Runnable"], None, move |env, method, _| {
+    let runnable = JniProxy::build(None, ["java/lang/Runnable"], move |env, method, _| {
         if method.get_method_name(env)? == "run" {
             let _ = runnable(env);
             let _ = env.exception_clear();
         }
-        jni_return_void(env)
+        JniProxy::void(env)
     })?;
     let main_looper = env
         .call_static_method(

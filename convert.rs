@@ -1,8 +1,12 @@
-use crate::{jni_clear_ex, loader::jni_attach_vm, AutoLocal, JObjectAutoLocal};
+use crate::{jni_attach_vm, jni_clear_ex, AutoLocal, JObjectAutoLocal};
 use jni::{
+    descriptors::Desc,
     errors::Error,
     objects::{GlobalRef, JClass, JMethodID, JObject, JStaticMethodID, JValueOwned},
-    signature::{Primitive, ReturnType},
+    signature::{
+        Primitive,
+        ReturnType::{Object as RetObj, Primitive as RetPrim},
+    },
     sys::{jboolean, jbyte, jchar, jdouble, jfloat, jint, jlong, jshort, jvalue},
     JNIEnv,
 };
@@ -20,6 +24,9 @@ pub trait JValueGenGet<'a> {
     fn get_long(self) -> Result<jlong, Error>;
     fn get_float(self) -> Result<jfloat, Error>;
     fn get_double(self) -> Result<jdouble, Error>;
+
+    #[doc(hidden)]
+    fn sealer(_: private::Internal);
 }
 
 impl<'a> JValueGenGet<'a> for Result<JValueOwned<'a>, Error> {
@@ -67,6 +74,8 @@ impl<'a> JValueGenGet<'a> for Result<JValueOwned<'a>, Error> {
     fn get_double(self) -> Result<jdouble, Error> {
         self.and_then(|v| v.d()).map_err(jni_clear_ex)
     }
+
+    fn sealer(_: private::Internal) {}
 }
 
 /// Gets the value from the Java object; calls `jni_clear_ex()` for an error.
@@ -76,67 +85,93 @@ pub trait JObjectGet<'a> {
     /// Checks if the object reference is null.
     fn is_null(&self) -> bool;
 
-    /// Returns true if the object reference can be cast to the given type. Returns false for null.
-    ///
-    /// ```
-    /// use jni_min_helper::*;
-    /// let env = &mut jni_attach_vm().unwrap();
-    /// let class_integer = env.find_class("java/lang/Integer").auto_local(env).unwrap();
-    /// let integer = (3 as jni::sys::jint).create_jobject(env).unwrap();
-    /// assert!(integer.is_class(class_integer.as_ref().into(), env).unwrap());
-    /// ```
-    fn is_class(&self, class: &JClass<'a>, env: &mut JNIEnv<'a>) -> Result<bool, Error>;
+    /// Returns `Error::NullPtr(err_msg)` if the JNI reference is null.
+    fn null_check(&self, err_msg: &'static str) -> Result<&JObject<'a>, Error>;
 
-    /// Returns true if the object is a `java.lang.Number`.
-    fn is_number(&self, env: &mut JNIEnv<'a>) -> Result<bool, Error>;
+    /// Does `null_check()` for an owned JNI reference.
+    fn null_check_owned(self, err_msg: &'static str) -> Result<Self, Error>
+    where
+        Self: Sized;
 
-    /// Returns `Error::NullPtr(err_msg)` if the object reference is null.
-    fn null_check(&self, err_msg: &'static str) -> Result<(), Error>;
+    /// Does `null_check()`, returns `Error::WrongJValueType` if it is not an instance
+    /// of the given class.
+    fn class_check<'b, 'e>(
+        &self,
+        class: impl Desc<'e, JClass<'b>>,
+        error_clue: &'static str,
+        env: &mut JNIEnv<'e>,
+    ) -> Result<&JObject<'a>, Error>;
 
-    /// Does `null_check()`, returns `Error::WrongJValueType` if it is not a `java.lang.Number`.
+    /// Does `class_check()` for an owned JNI reference.
+    fn class_check_owned<'b, 'e>(
+        self,
+        class: impl Desc<'e, JClass<'b>>,
+        error_clue: &'static str,
+        env: &mut JNIEnv<'e>,
+    ) -> Result<Self, Error>
+    where
+        Self: Sized;
+
+    /// Does `class_check()` for `java.lang.Number`.
     ///
     /// ```
     /// use jni_min_helper::*;
     /// use jni::{objects::JObject, sys::jint, errors::Error};
     ///
     /// let env = &mut jni_attach_vm().unwrap();
-    /// let integer = (3 as jint).create_jobject(env).unwrap();
-    /// let boolean = true.create_jobject(env).unwrap();
+    /// let integer = (3 as jint).new_jobject(env).unwrap();
+    /// let boolean = true.new_jobject(env).unwrap();
     /// assert!(integer.number_check(env).is_ok());
     /// assert!(matches!(boolean.number_check(env), Err(Error::WrongJValueType(_, _))));
     /// assert!(matches!(JObject::null().number_check(env), Err(Error::NullPtr(_))));
     /// ```
-    fn number_check(&self, env: &mut JNIEnv<'a>) -> Result<(), Error>;
+    fn number_check<'e>(&self, env: &mut JNIEnv<'e>) -> Result<&JObject<'a>, Error>;
+
+    /// Returns a referenced `jni::objects::JClass<'_>` JNI wrapper (unchecked).
+    fn as_class(&self) -> &JClass<'a>;
+    /// Returns a referenced `jni::objects::JClass<'_>` JNI wrapper. Returns an error if it
+    /// is not a class object.
+    fn as_class_checked(&self, env: &mut JNIEnv<'_>) -> Result<&JClass<'a>, Error>;
+
+    /// Gets the value of an `java.lang.Boolean` wrapper.
+    fn get_boolean(&self, env: &mut JNIEnv<'_>) -> Result<bool, Error>;
+    /// Gets the value of an `java.lang.Character` wrapper.
+    fn get_char(&self, env: &mut JNIEnv<'_>) -> Result<jchar, Error>;
+
+    /// Gets the value of an `java.lang.Byte` wrapper.
+    fn get_byte(&self, env: &mut JNIEnv<'_>) -> Result<jbyte, Error>;
+    /// Gets the value of an `java.lang.Short` wrapper.
+    fn get_short(&self, env: &mut JNIEnv<'_>) -> Result<jshort, Error>;
+    /// Gets the value of an `java.lang.Integer` wrapper.
+    fn get_int(&self, env: &mut JNIEnv<'_>) -> Result<jint, Error>;
+    /// Gets the value of an `java.lang.Long` wrapper.
+    fn get_long(&self, env: &mut JNIEnv<'_>) -> Result<jlong, Error>;
+    /// Gets the value of an `java.lang.Float` wrapper.
+    fn get_float(&self, env: &mut JNIEnv<'_>) -> Result<jfloat, Error>;
+    /// Gets the value of an `java.lang.Double` wrapper.
+    fn get_double(&self, env: &mut JNIEnv<'_>) -> Result<jdouble, Error>;
 
     /// Returns the binary name (internal form) of the object's class, or `Error::NullPtr`.
     ///
     /// ```
     /// use jni_min_helper::*;
     /// let env = &mut jni_attach_vm().unwrap();
-    /// let boolean = true.create_jobject(env).unwrap();
+    /// let boolean = true.new_jobject(env).unwrap();
     /// assert_eq!(boolean.get_class_name(env).unwrap(), "java/lang/Boolean");
     /// ```
-    fn get_class_name(&self, env: &mut JNIEnv<'a>) -> Result<String, Error>;
+    fn get_class_name(&self, env: &mut JNIEnv<'_>) -> Result<String, Error>;
 
     /// Returns the method name if it is a `java.lang.reflect.Method`.
-    fn get_method_name(&self, env: &mut JNIEnv<'a>) -> Result<String, Error>;
+    fn get_method_name(&self, env: &mut JNIEnv<'_>) -> Result<String, Error>;
 
     /// Returns the detail message string if it is a `java.lang.Throwable`.
-    fn get_throwable_msg(&self, env: &mut JNIEnv<'a>) -> Result<String, Error>;
+    fn get_throwable_msg(&self, env: &mut JNIEnv<'_>) -> Result<String, Error>;
 
-    /// Reads the string from `java.lang.String`. Returns an error if it's not a Java string.
-    /// Returns `Ok(None)` if it's not a valid UTF-8 string.
-    fn get_string(&self, env: &mut JNIEnv<'a>) -> Result<Option<String>, Error>;
+    /// Reads the string from `java.lang.String`. Returns an error if it is not a valid String.
+    fn get_string(&self, env: &mut JNIEnv<'_>) -> Result<String, Error>;
 
-    fn get_boolean(&self, env: &mut JNIEnv<'a>) -> Result<bool, Error>;
-    fn get_char(&self, env: &mut JNIEnv<'a>) -> Result<jchar, Error>;
-
-    fn get_byte(&self, env: &mut JNIEnv<'a>) -> Result<jbyte, Error>;
-    fn get_short(&self, env: &mut JNIEnv<'a>) -> Result<jshort, Error>;
-    fn get_int(&self, env: &mut JNIEnv<'a>) -> Result<jint, Error>;
-    fn get_long(&self, env: &mut JNIEnv<'a>) -> Result<jlong, Error>;
-    fn get_float(&self, env: &mut JNIEnv<'a>) -> Result<jfloat, Error>;
-    fn get_double(&self, env: &mut JNIEnv<'a>) -> Result<jdouble, Error>;
+    #[doc(hidden)]
+    fn sealer(_: private::Internal);
 }
 
 impl<'a, T> JObjectGet<'a> for T
@@ -152,256 +187,217 @@ where
     }
 
     #[inline(always)]
-    fn is_class(&self, class: &JClass<'a>, env: &mut JNIEnv<'a>) -> Result<bool, Error> {
-        if self.is_null() {
-            return Ok(false);
-        }
-        env.is_instance_of(self, class)
-    }
-
-    #[inline(always)]
-    fn is_number(&self, env: &mut JNIEnv<'a>) -> Result<bool, Error> {
-        self.is_class(perf_store()?.abstract_number.as_obj().into(), env)
-    }
-
-    #[inline(always)]
-    fn null_check(&self, err_msg: &'static str) -> Result<(), Error> {
+    fn null_check(&self, err_msg: &'static str) -> Result<&JObject<'a>, Error> {
         if !self.is_null() {
-            Ok(())
+            Ok(self.as_ref())
         } else {
             Err(Error::NullPtr(err_msg))
         }
     }
 
     #[inline(always)]
-    fn number_check(&self, env: &mut JNIEnv<'a>) -> Result<(), Error> {
-        self.null_check("number_check")?;
-        if !self.is_number(env)? {
-            return Err(Error::WrongJValueType(
-                "java.lang.Number",
-                "check object class",
-            ));
-        }
-        Ok(())
-    }
-
-    #[inline]
-    fn get_class_name(&self, env: &mut JNIEnv<'a>) -> Result<String, Error> {
-        self.null_check("get_class_name")?;
-        unsafe {
-            env.call_method_unchecked(
-                env.get_object_class(self).auto_local(env)?,
-                perf_store()?.get_class_name,
-                ReturnType::Object,
-                &[],
-            )
-        }
-        .get_object(env)?
-        .get_string(env)
-        .map(|s| class_name_to_internal(&s.unwrap()))
-    }
-
-    #[inline]
-    fn get_method_name(&self, env: &mut JNIEnv<'a>) -> Result<String, Error> {
-        let perf_store = perf_store()?;
-        if !self.is_class(perf_store.java_method.as_obj().into(), env)? {
-            return Err(Error::WrongJValueType(
-                "java.lang.reflect.Method",
-                "check object class",
-            ));
-        }
-        unsafe {
-            env.call_method_unchecked(self, perf_store.get_method_name, ReturnType::Object, &[])
-        }
-        .get_object(env)?
-        .get_string(env)
-        .map(|s| s.unwrap())
-    }
-
-    #[inline]
-    fn get_throwable_msg(&self, env: &mut JNIEnv<'a>) -> Result<String, Error> {
-        let perf_store = perf_store()?;
-        if !self.is_class(perf_store.java_throwable.as_obj().into(), env)? {
-            return Err(Error::WrongJValueType(
-                "java.lang.Throwable",
-                "check object class",
-            ));
-        }
-        unsafe {
-            env.call_method_unchecked(self, perf_store.get_throwable_msg, ReturnType::Object, &[])
-        }
-        .get_object(env)?
-        .get_string(env)
-        .map(|s| s.unwrap())
+    fn null_check_owned(self, err_msg: &'static str) -> Result<Self, Error>
+    where
+        Self: Sized,
+    {
+        self.null_check(err_msg)?;
+        Ok(self)
     }
 
     #[inline(always)]
-    fn get_string(&self, env: &mut JNIEnv<'a>) -> Result<Option<String>, Error> {
-        if !self.is_class(perf_store()?.java_string.as_obj().into(), env)? {
-            return Err(Error::WrongJValueType(
-                "java.lang.String",
-                "check object class",
-            ));
+    fn class_check<'b, 'e>(
+        &self,
+        class: impl Desc<'e, JClass<'b>>,
+        error_clue: &'static str,
+        env: &mut JNIEnv<'e>,
+    ) -> Result<&JObject<'a>, Error> {
+        self.null_check(error_clue)?;
+        if env.is_instance_of(self, class)? {
+            Ok(self.as_ref())
+        } else {
+            Err(Error::WrongJValueType("Object", error_clue))
         }
-        let jstr =
-            unsafe { env.get_string_unchecked(self.as_ref().into()) }.map_err(jni_clear_ex)?;
-        Ok(jstr.to_str().map(|s| s.to_string()).ok())
     }
 
     #[inline(always)]
-    fn get_boolean(&self, env: &mut JNIEnv<'a>) -> Result<bool, Error> {
-        if !self.is_class(perf_store()?.wrapper_boolean.as_obj().into(), env)? {
-            return Err(Error::WrongJValueType(
-                "java.lang.Boolean",
-                "check object class",
-            ));
-        }
+    fn class_check_owned<'b, 'e>(
+        self,
+        class: impl Desc<'e, JClass<'b>>,
+        error_clue: &'static str,
+        env: &mut JNIEnv<'e>,
+    ) -> Result<Self, Error>
+    where
+        Self: Sized,
+    {
+        self.class_check(class, error_clue, env)?;
+        Ok(self)
+    }
+
+    #[inline(always)]
+    fn number_check<'e>(&self, env: &mut JNIEnv<'e>) -> Result<&JObject<'a>, Error> {
+        self.class_check(perf()?.abstract_number.as_class(), "number_check", env)
+    }
+
+    #[inline(always)]
+    fn as_class_checked(&self, env: &mut JNIEnv<'_>) -> Result<&JClass<'a>, Error> {
+        self.class_check(perf()?.java_class.as_class(), "as_class_checked", env)
+            .map(|o| o.as_class())
+    }
+
+    #[inline(always)]
+    fn as_class(&self) -> &JClass<'a> {
+        self.as_ref().into()
+    }
+
+    #[inline(always)]
+    fn get_boolean(&self, env: &mut JNIEnv<'_>) -> Result<bool, Error> {
+        let perf = perf()?;
+        self.class_check(perf.wrapper_boolean.as_class(), "get_boolean", env)?;
         unsafe {
-            env.call_method_unchecked(
-                self,
-                perf_store()?.get_boolean,
-                ReturnType::Primitive(Primitive::Boolean),
-                &[],
-            )
+            env.call_method_unchecked(self, perf.get_boolean, RetPrim(Primitive::Boolean), &[])
         }
         .get_boolean()
     }
     #[inline(always)]
-    fn get_char(&self, env: &mut JNIEnv<'a>) -> Result<jchar, Error> {
-        if !self.is_class(perf_store()?.wrapper_character.as_obj().into(), env)? {
-            return Err(Error::WrongJValueType(
-                "java.lang.Character",
-                "check object class",
-            ));
-        }
+    fn get_char(&self, env: &mut JNIEnv<'_>) -> Result<jchar, Error> {
+        let perf = perf()?;
+        self.class_check(perf.wrapper_character.as_class(), "get_char", env)?;
         unsafe {
-            env.call_method_unchecked(
-                self,
-                perf_store()?.get_character,
-                ReturnType::Primitive(Primitive::Char),
-                &[],
-            )
+            env.call_method_unchecked(self, perf.get_character, RetPrim(Primitive::Char), &[])
         }
         .get_char()
     }
 
     #[inline(always)]
-    fn get_byte(&self, env: &mut JNIEnv<'a>) -> Result<jbyte, Error> {
+    fn get_byte(&self, env: &mut JNIEnv<'_>) -> Result<jbyte, Error> {
         self.number_check(env)?;
-        unsafe {
-            env.call_method_unchecked(
-                self,
-                perf_store()?.get_byte,
-                ReturnType::Primitive(Primitive::Byte),
-                &[],
-            )
-        }
-        .get_byte()
+        unsafe { env.call_method_unchecked(self, perf()?.get_byte, RetPrim(Primitive::Byte), &[]) }
+            .get_byte()
     }
     #[inline(always)]
-    fn get_short(&self, env: &mut JNIEnv<'a>) -> Result<jshort, Error> {
+    fn get_short(&self, env: &mut JNIEnv<'_>) -> Result<jshort, Error> {
         self.number_check(env)?;
         unsafe {
-            env.call_method_unchecked(
-                self,
-                perf_store()?.get_short,
-                ReturnType::Primitive(Primitive::Short),
-                &[],
-            )
+            env.call_method_unchecked(self, perf()?.get_short, RetPrim(Primitive::Short), &[])
         }
         .get_short()
     }
     #[inline(always)]
-    fn get_int(&self, env: &mut JNIEnv<'a>) -> Result<jint, Error> {
+    fn get_int(&self, env: &mut JNIEnv<'_>) -> Result<jint, Error> {
         self.number_check(env)?;
         unsafe {
-            env.call_method_unchecked(
-                self,
-                perf_store()?.get_integer,
-                ReturnType::Primitive(Primitive::Int),
-                &[],
-            )
+            env.call_method_unchecked(self, perf()?.get_integer, RetPrim(Primitive::Int), &[])
         }
         .get_int()
     }
     #[inline(always)]
-    fn get_long(&self, env: &mut JNIEnv<'a>) -> Result<jlong, Error> {
+    fn get_long(&self, env: &mut JNIEnv<'_>) -> Result<jlong, Error> {
         self.number_check(env)?;
-        unsafe {
-            env.call_method_unchecked(
-                self,
-                perf_store()?.get_long,
-                ReturnType::Primitive(Primitive::Long),
-                &[],
-            )
-        }
-        .get_long()
+        unsafe { env.call_method_unchecked(self, perf()?.get_long, RetPrim(Primitive::Long), &[]) }
+            .get_long()
     }
     #[inline(always)]
-    fn get_float(&self, env: &mut JNIEnv<'a>) -> Result<jfloat, Error> {
+    fn get_float(&self, env: &mut JNIEnv<'_>) -> Result<jfloat, Error> {
         self.number_check(env)?;
         unsafe {
-            env.call_method_unchecked(
-                self,
-                perf_store()?.get_float,
-                ReturnType::Primitive(Primitive::Float),
-                &[],
-            )
+            env.call_method_unchecked(self, perf()?.get_float, RetPrim(Primitive::Float), &[])
         }
         .get_float()
     }
     #[inline(always)]
-    fn get_double(&self, env: &mut JNIEnv<'a>) -> Result<jdouble, Error> {
+    fn get_double(&self, env: &mut JNIEnv<'_>) -> Result<jdouble, Error> {
         self.number_check(env)?;
         unsafe {
-            env.call_method_unchecked(
-                self,
-                perf_store()?.get_double,
-                ReturnType::Primitive(Primitive::Double),
-                &[],
-            )
+            env.call_method_unchecked(self, perf()?.get_double, RetPrim(Primitive::Double), &[])
         }
         .get_double()
     }
+
+    #[inline]
+    fn get_class_name(&self, env: &mut JNIEnv<'_>) -> Result<String, Error> {
+        self.null_check("get_class_name")?;
+        unsafe {
+            env.call_method_unchecked(
+                env.get_object_class(self).auto_local(env)?,
+                perf()?.get_class_name,
+                RetObj,
+                &[],
+            )
+        }
+        .get_object(env)?
+        .get_string(env)
+        .map(|s| class_name_to_internal(&s))
+    }
+
+    #[inline]
+    fn get_method_name(&self, env: &mut JNIEnv<'_>) -> Result<String, Error> {
+        let perf = perf()?;
+        self.class_check(perf.java_method.as_class(), "get_method_name", env)?;
+        unsafe { env.call_method_unchecked(self, perf.get_method_name, RetObj, &[]) }
+            .get_object(env)?
+            .get_string(env)
+    }
+
+    #[inline]
+    fn get_throwable_msg(&self, env: &mut JNIEnv<'_>) -> Result<String, Error> {
+        let perf = perf()?;
+        self.class_check(perf.java_throwable.as_class(), "get_throwable_msg", env)?;
+        unsafe { env.call_method_unchecked(self, perf.get_throwable_msg, RetObj, &[]) }
+            .get_object(env)?
+            .get_string(env)
+    }
+
+    #[inline(always)]
+    fn get_string(&self, env: &mut JNIEnv<'_>) -> Result<String, Error> {
+        self.class_check(perf()?.java_string.as_class(), "get_string", env)?;
+        unsafe { env.get_string_unchecked(self.as_ref().into()) }
+            .map_err(jni_clear_ex)?
+            .to_str()
+            .map(|s| s.to_string())
+            // the last is unlikely to happen
+            .map_err(|_| Error::WrongJValueType("String", "UTF-8 convertion failure"))
+    }
+
+    fn sealer(_: private::Internal) {}
 }
 
-/// Creates the Java object for the Rust value.
+/// Creates the Java object (wrapper) for the Rust value.
 ///
 /// ```
 /// use jni_min_helper::*;
 /// let env = &mut jni_attach_vm().unwrap();
 ///
-/// assert_eq!("a×b".create_jobject(env).unwrap().get_string(env).unwrap(), Some("a×b".to_string()));
-/// assert_eq!(false.create_jobject(env).unwrap().get_boolean(env).unwrap(), false);
-/// assert_eq!(true.create_jobject(env).unwrap().get_boolean(env).unwrap(), true);
-/// assert_eq!(0x000a_u16.create_jobject(env).unwrap().get_char(env).unwrap(), 0x000a_u16);
+/// assert_eq!("a×b".new_jobject(env).unwrap().get_string(env).unwrap(), "a×b");
+/// assert_eq!(false.new_jobject(env).unwrap().get_boolean(env).unwrap(), false);
+/// assert_eq!(true.new_jobject(env).unwrap().get_boolean(env).unwrap(), true);
+/// assert_eq!(0x000a_u16.new_jobject(env).unwrap().get_char(env).unwrap(), 0x000a_u16);
 ///
-/// assert_eq!(0x39_i8.create_jobject(env).unwrap().get_byte(env).unwrap(), 0x39_i8);
-/// assert_eq!(i16::MAX.create_jobject(env).unwrap().get_short(env).unwrap(), i16::MAX);
-/// assert_eq!(i32::MAX.create_jobject(env).unwrap().get_int(env).unwrap(), i32::MAX);
-/// assert_eq!(i64::MAX.create_jobject(env).unwrap().get_long(env).unwrap(), i64::MAX);
-/// assert_eq!(3.14_f32.create_jobject(env).unwrap().get_float(env).unwrap(), 3.14_f32);
-/// assert_eq!(3.14.create_jobject(env).unwrap().get_double(env).unwrap(), 3.14);
+/// assert_eq!(0x39_i8.new_jobject(env).unwrap().get_byte(env).unwrap(), 0x39_i8);
+/// assert_eq!(i16::MAX.new_jobject(env).unwrap().get_short(env).unwrap(), i16::MAX);
+/// assert_eq!(i32::MAX.new_jobject(env).unwrap().get_int(env).unwrap(), i32::MAX);
+/// assert_eq!(i64::MAX.new_jobject(env).unwrap().get_long(env).unwrap(), i64::MAX);
+/// assert_eq!(3.14_f32.new_jobject(env).unwrap().get_float(env).unwrap(), 3.14_f32);
+/// assert_eq!(3.14.new_jobject(env).unwrap().get_double(env).unwrap(), 3.14);
 /// ```
-pub trait JObjectCreate<'a> {
-    fn create_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error>;
+pub trait JObjectNew<'a> {
+    fn new_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error>;
 }
 
-impl<'a> JObjectCreate<'a> for str {
-    fn create_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
+impl<'a> JObjectNew<'a> for str {
+    fn new_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
         env.new_string(self).auto_local(env)
     }
 }
 
-impl<'a> JObjectCreate<'a> for bool {
-    fn create_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
+impl<'a> JObjectNew<'a> for bool {
+    fn new_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
         let val = if *self { 1u8 } else { 0u8 };
-        let perf_store = perf_store()?;
+        let perf = perf()?;
         unsafe {
             env.call_static_method_unchecked(
-                &perf_store.wrapper_boolean,
-                perf_store.value_of_boolean,
-                ReturnType::Object,
+                &perf.wrapper_boolean,
+                perf.value_of_boolean,
+                RetObj,
                 &[jvalue { z: val as jboolean }],
             )
         }
@@ -409,14 +405,14 @@ impl<'a> JObjectCreate<'a> for bool {
     }
 }
 
-impl<'a> JObjectCreate<'a> for jchar {
-    fn create_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
-        let perf_store = perf_store()?;
+impl<'a> JObjectNew<'a> for jchar {
+    fn new_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
+        let perf = perf()?;
         unsafe {
             env.call_static_method_unchecked(
-                &perf_store.wrapper_character,
-                perf_store.value_of_char,
-                ReturnType::Object,
+                &perf.wrapper_character,
+                perf.value_of_char,
+                RetObj,
                 &[jvalue { c: *self }],
             )
         }
@@ -424,84 +420,84 @@ impl<'a> JObjectCreate<'a> for jchar {
     }
 }
 
-impl<'a> JObjectCreate<'a> for jbyte {
-    fn create_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
-        let perf_store = perf_store()?;
+impl<'a> JObjectNew<'a> for jbyte {
+    fn new_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
+        let perf = perf()?;
         unsafe {
             env.call_static_method_unchecked(
-                &perf_store.wrapper_byte,
-                perf_store.value_of_byte,
-                ReturnType::Object,
+                &perf.wrapper_byte,
+                perf.value_of_byte,
+                RetObj,
                 &[jvalue { b: *self }],
             )
         }
         .get_object(env)
     }
 }
-impl<'a> JObjectCreate<'a> for jshort {
-    fn create_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
-        let perf_store = perf_store()?;
+impl<'a> JObjectNew<'a> for jshort {
+    fn new_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
+        let perf = perf()?;
         unsafe {
             env.call_static_method_unchecked(
-                &perf_store.wrapper_short,
-                perf_store.value_of_short,
-                ReturnType::Object,
+                &perf.wrapper_short,
+                perf.value_of_short,
+                RetObj,
                 &[jvalue { s: *self }],
             )
         }
         .get_object(env)
     }
 }
-impl<'a> JObjectCreate<'a> for jint {
-    fn create_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
-        let perf_store = perf_store()?;
+impl<'a> JObjectNew<'a> for jint {
+    fn new_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
+        let perf = perf()?;
         unsafe {
             env.call_static_method_unchecked(
-                &perf_store.wrapper_integer,
-                perf_store.value_of_int,
-                ReturnType::Object,
+                &perf.wrapper_integer,
+                perf.value_of_int,
+                RetObj,
                 &[jvalue { i: *self }],
             )
         }
         .get_object(env)
     }
 }
-impl<'a> JObjectCreate<'a> for jlong {
-    fn create_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
-        let perf_store = perf_store()?;
+impl<'a> JObjectNew<'a> for jlong {
+    fn new_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
+        let perf = perf()?;
         unsafe {
             env.call_static_method_unchecked(
-                &perf_store.wrapper_long,
-                perf_store.value_of_long,
-                ReturnType::Object,
+                &perf.wrapper_long,
+                perf.value_of_long,
+                RetObj,
                 &[jvalue { j: *self }],
             )
         }
         .get_object(env)
     }
 }
-impl<'a> JObjectCreate<'a> for jfloat {
-    fn create_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
-        let perf_store = perf_store()?;
+impl<'a> JObjectNew<'a> for jfloat {
+    fn new_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
+        let perf = perf()?;
         unsafe {
             env.call_static_method_unchecked(
-                &perf_store.wrapper_float,
-                perf_store.value_of_float,
-                ReturnType::Object,
+                &perf.wrapper_float,
+                perf.value_of_float,
+                RetObj,
                 &[jvalue { f: *self }],
             )
         }
         .get_object(env)
     }
 }
-impl<'a> JObjectCreate<'a> for jdouble {
-    fn create_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
-        let perf_store = perf_store()?;
+impl<'a> JObjectNew<'a> for jdouble {
+    fn new_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
+        let perf = perf()?;
         unsafe {
             env.call_static_method_unchecked(
-                &perf_store.wrapper_double,
-                perf_store.value_of_double,
-                ReturnType::Object,
+                &perf.wrapper_double,
+                perf.value_of_double,
+                RetObj,
                 &[jvalue { d: *self }],
             )
         }
@@ -521,6 +517,7 @@ struct PerfStore {
     wrapper_double: GlobalRef,
 
     java_string: GlobalRef,
+    java_class: GlobalRef,
     java_method: GlobalRef,
     java_throwable: GlobalRef,
 
@@ -548,7 +545,7 @@ struct PerfStore {
 }
 
 #[inline]
-fn perf_store() -> Result<&'static PerfStore, Error> {
+fn perf() -> Result<&'static PerfStore, Error> {
     static PERF_STORE: OnceLock<PerfStore> = OnceLock::new();
     if PERF_STORE.get().is_none() {
         let env = &mut jni_attach_vm()?;
@@ -569,75 +566,74 @@ fn perf_store() -> Result<&'static PerfStore, Error> {
             wrapper_double: env.find_class("java/lang/Double").global_ref(env)?,
 
             java_string: env.find_class("java/lang/String").global_ref(env)?,
+            java_class: env.find_class("java/lang/Class").global_ref(env)?,
             java_method: env.find_class("java/lang/reflect/Method").global_ref(env)?,
             java_throwable: env.find_class("java/lang/Throwable").global_ref(env)?,
 
-            get_boolean: env.get_method_id(&wrapper_boolean, "booleanValue", "()Z")?,
-            get_character: env.get_method_id(&wrapper_character, "charValue", "()C")?,
+            get_boolean: env
+                .get_method_id(&wrapper_boolean, "booleanValue", "()Z")
+                .map_err(jni_clear_ex)?,
+            get_character: env
+                .get_method_id(&wrapper_character, "charValue", "()C")
+                .map_err(jni_clear_ex)?,
 
-            get_byte: env.get_method_id(&abstract_number, "byteValue", "()B")?,
-            get_short: env.get_method_id(&abstract_number, "shortValue", "()S")?,
-            get_integer: env.get_method_id(&abstract_number, "intValue", "()I")?,
-            get_long: env.get_method_id(&abstract_number, "longValue", "()J")?,
-            get_float: env.get_method_id(&abstract_number, "floatValue", "()F")?,
-            get_double: env.get_method_id(&abstract_number, "doubleValue", "()D")?,
+            get_byte: env
+                .get_method_id(&abstract_number, "byteValue", "()B")
+                .map_err(jni_clear_ex)?,
+            get_short: env
+                .get_method_id(&abstract_number, "shortValue", "()S")
+                .map_err(jni_clear_ex)?,
+            get_integer: env
+                .get_method_id(&abstract_number, "intValue", "()I")
+                .map_err(jni_clear_ex)?,
+            get_long: env
+                .get_method_id(&abstract_number, "longValue", "()J")
+                .map_err(jni_clear_ex)?,
+            get_float: env
+                .get_method_id(&abstract_number, "floatValue", "()F")
+                .map_err(jni_clear_ex)?,
+            get_double: env
+                .get_method_id(&abstract_number, "doubleValue", "()D")
+                .map_err(jni_clear_ex)?,
 
-            value_of_boolean: env.get_static_method_id(
-                "java/lang/Boolean",
-                "valueOf",
-                "(Z)Ljava/lang/Boolean;",
-            )?,
-            value_of_char: env.get_static_method_id(
-                "java/lang/Character",
-                "valueOf",
-                "(C)Ljava/lang/Character;",
-            )?,
-            value_of_byte: env.get_static_method_id(
-                "java/lang/Byte",
-                "valueOf",
-                "(B)Ljava/lang/Byte;",
-            )?,
-            value_of_short: env.get_static_method_id(
-                "java/lang/Short",
-                "valueOf",
-                "(S)Ljava/lang/Short;",
-            )?,
-            value_of_int: env.get_static_method_id(
-                "java/lang/Integer",
-                "valueOf",
-                "(I)Ljava/lang/Integer;",
-            )?,
-            value_of_long: env.get_static_method_id(
-                "java/lang/Long",
-                "valueOf",
-                "(J)Ljava/lang/Long;",
-            )?,
-            value_of_float: env.get_static_method_id(
-                "java/lang/Float",
-                "valueOf",
-                "(F)Ljava/lang/Float;",
-            )?,
-            value_of_double: env.get_static_method_id(
-                "java/lang/Double",
-                "valueOf",
-                "(D)Ljava/lang/Double;",
-            )?,
+            value_of_boolean: env
+                .get_static_method_id("java/lang/Boolean", "valueOf", "(Z)Ljava/lang/Boolean;")
+                .map_err(jni_clear_ex)?,
+            value_of_char: env
+                .get_static_method_id("java/lang/Character", "valueOf", "(C)Ljava/lang/Character;")
+                .map_err(jni_clear_ex)?,
+            value_of_byte: env
+                .get_static_method_id("java/lang/Byte", "valueOf", "(B)Ljava/lang/Byte;")
+                .map_err(jni_clear_ex)?,
+            value_of_short: env
+                .get_static_method_id("java/lang/Short", "valueOf", "(S)Ljava/lang/Short;")
+                .map_err(jni_clear_ex)?,
+            value_of_int: env
+                .get_static_method_id("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
+                .map_err(jni_clear_ex)?,
+            value_of_long: env
+                .get_static_method_id("java/lang/Long", "valueOf", "(J)Ljava/lang/Long;")
+                .map_err(jni_clear_ex)?,
+            value_of_float: env
+                .get_static_method_id("java/lang/Float", "valueOf", "(F)Ljava/lang/Float;")
+                .map_err(jni_clear_ex)?,
+            value_of_double: env
+                .get_static_method_id("java/lang/Double", "valueOf", "(D)Ljava/lang/Double;")
+                .map_err(jni_clear_ex)?,
 
-            get_class_name: env.get_method_id(
-                "java/lang/Class",
-                "getName",
-                "()Ljava/lang/String;",
-            )?,
-            get_method_name: env.get_method_id(
-                "java/lang/reflect/Method",
-                "getName",
-                "()Ljava/lang/String;",
-            )?,
-            get_throwable_msg: env.get_method_id(
-                "java/lang/Throwable",
-                "getMessage",
-                "()Ljava/lang/String;",
-            )?,
+            get_class_name: env
+                .get_method_id("java/lang/Class", "getName", "()Ljava/lang/String;")
+                .map_err(jni_clear_ex)?,
+            get_method_name: env
+                .get_method_id(
+                    "java/lang/reflect/Method",
+                    "getName",
+                    "()Ljava/lang/String;",
+                )
+                .map_err(jni_clear_ex)?,
+            get_throwable_msg: env
+                .get_method_id("java/lang/Throwable", "getMessage", "()Ljava/lang/String;")
+                .map_err(jni_clear_ex)?,
         });
     }
     Ok(PERF_STORE.get().unwrap())
@@ -652,4 +648,10 @@ pub(crate) fn class_name_to_internal(name: &str) -> String {
 #[inline(always)]
 pub(crate) fn class_name_to_java(name: &str) -> String {
     name.replace("/", ".")
+}
+
+mod private {
+    /// Used as a parameter of the hidden function in sealed traits.
+    #[derive(Debug)]
+    pub struct Internal;
 }
