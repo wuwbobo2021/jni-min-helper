@@ -90,14 +90,10 @@ fn on_receive<'a>(
     context: &JObject<'a>,
     intent: &JObject<'a>,
 ) -> Result<(), Error> {
-    let action = env
-        .call_method(intent, "getAction", "()Ljava/lang/String;", &[])
-        .get_object(env)?
-        .get_string(env)?;
+    let action = BroadcastReceiver::get_intent_action(intent, env)?;
     log::info!("Received an intent of action '{action}'.");
 
     let connectivity_service = "connectivity".new_jobject(env)?;
-
     let conn_man = env
         .call_method(
             context,
@@ -188,12 +184,7 @@ fn background_loop() {
     loop {
         if let Some(intent) = waiter.wait_timeout(Duration::from_secs(1)) {
             let env = &mut jni_attach_vm().unwrap();
-            let action = env
-                .call_method(intent, "getAction", "()Ljava/lang/String;", &[])
-                .get_object(env)
-                .unwrap()
-                .get_string(env)
-                .unwrap();
+            let action = BroadcastReceiver::get_intent_action(intent, env).unwrap();
             log::info!("Received an intent of action '{action}'.");
         }
     }

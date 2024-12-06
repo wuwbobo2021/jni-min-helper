@@ -2,7 +2,8 @@ use crate::{convert::*, jni_attach_vm, jni_clear_ex, loader::*, proxy::*, JObjec
 
 use jni::{
     errors::Error,
-    objects::{GlobalRef, JObject},
+    objects::{GlobalRef, JMethodID, JObject},
+    signature::ReturnType,
     JNIEnv,
 };
 
@@ -132,6 +133,31 @@ impl BroadcastReceiver {
         .map(|_| ())
     }
 
+    /// Gets the action name of the received `android.content.Intent`.
+    #[inline]
+    pub fn get_intent_action<'a>(
+        intent: impl AsRef<JObject<'a>>,
+        env: &mut JNIEnv<'_>,
+    ) -> Result<String, Error> {
+        use std::sync::OnceLock;
+        static STORE: OnceLock<(GlobalRef, JMethodID)> = OnceLock::new();
+        if STORE.get().is_none() {
+            let env = &mut jni_attach_vm()?;
+            let class_intent = env.find_class("android/content/Intent").global_ref(env)?;
+            let method_get_action = env
+                .get_method_id(&class_intent, "getAction", "()Ljava/lang/String;")
+                .map_err(jni_clear_ex)?;
+            let _ = STORE.set((class_intent, method_get_action));
+        }
+        let store = STORE.get().unwrap();
+        let (class, method) = (store.0.as_class(), &store.1);
+
+        intent.class_check(class, "get_intent_action", env)?;
+        unsafe { env.call_method_unchecked(intent, method, ReturnType::Object, &[]) }
+            .get_object(env)?
+            .get_string(env)
+    }
+
     /// Leaks the Rust handler and returns the global reference of the broadcast
     /// receiver. It prevents deregistering of the receiver on dropping. This is
     /// useful if it is created for *once* in the program.
@@ -204,15 +230,37 @@ mod waiter {
             &self.receiver
         }
 
-        /// Waits for receiving an intent. It does not work in the `android_main()` thread.
+        /// Returns the amount of received intents available for checking.
+        pub fn count_received(&self) -> usize {
+            self.inner.intents.lock().unwrap().len()
+        }
+
+        /// Takes the next received intent if available. This shouldn't conflict
+        /// with the asynchonous feature (which requires a mutable reference).
+        pub fn take_next(&self) -> Option<GlobalRef> {
+            self.inner.intents.lock().unwrap().pop_front()
+        }
+
+        /// Waits for receiving an intent.
+        /// Note: Waiting in the `android_main()` thread will prevent it from receiving.
         pub fn wait_timeout(&mut self, timeout: Duration) -> Option<GlobalRef> {
             let fut = BroadcastWaiterFuture { waiter: self };
             block_for_timeout(fut, timeout).unwrap_or(None)
         }
+
+        /// Gets the action name of the received `android.content.Intent`.
+        #[inline(always)]
+        pub fn get_intent_action<'a>(
+            intent: impl AsRef<JObject<'a>>,
+            env: &mut JNIEnv<'_>,
+        ) -> Result<String, Error> {
+            BroadcastReceiver::get_intent_action(intent, env)
+        }
     }
 
-    /// Convenient blocker for asynchronous functions, based on `futures_lite`
-    /// and `futures_timer`. It does not work in the `android_main()` thread.
+    /// Convenient blocker for asynchronous functions, based on `futures_lite` and `futures_timer`.
+    /// Warning: Blocking in the `android_main()` thread will block the future's completion if it
+    /// depends on event processing in this thread (check your glue crate like `android_activity`).
     pub fn block_for_timeout<T>(
         fut: impl std::future::Future<Output = T>,
         dur: std::time::Duration,
@@ -233,12 +281,22 @@ mod waiter {
             self: Pin<&mut Self>,
             cx: &mut task::Context<'_>,
         ) -> task::Poll<Option<Self::Item>> {
+            // <https://docs.rs/atomic-waker/1.1.2/atomic_waker/struct.AtomicWaker.html#examples>
+            if let Some(intent) = self.take_next() {
+                return task::Poll::Ready(Some(intent));
+            }
             self.inner.waker.register(cx.waker());
-            if let Some(intent) = self.inner.intents.lock().unwrap().pop_front() {
+            if let Some(intent) = self.take_next() {
                 task::Poll::Ready(Some(intent))
             } else {
                 task::Poll::Pending
             }
+        }
+
+        // Explanation for this trait function: the actual remaining length should fall
+        // in the returned estimation "range" (min, max).
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            (self.count_received(), None)
         }
     }
 
