@@ -1,8 +1,13 @@
 # Changes
 
+## 0.2.2
+* Fixed the problem of possible fatal exception when calling `BroadcastReceiver::unregister()` for an unregistered receiver.
+* Eliminated the `javac` warning for `InvocHdl.java`.
+
 ## 0.2.1
 * Fixed a problem about the performance cache in the `convert` module.
 * Added `is_same_object()`, `equals()` and `to_string()` in trait `JObjectGet`.
+* Added `get_intent_action()` in `BroadcastReceiver` and `BroadcastWaiter`.
 * Added `count_received()`, `take_next()` and `futures_core::Stream::size_hint()` implementation in `BroadcastWaiter`.
 
 ## 0.2.0

@@ -97,6 +97,14 @@ pub fn jni_get_vm() -> &'static JavaVM {
 /// It calls `JNIEnv::exception_clear()` which is needed for handling Java exceptions,
 /// Not clearing it may cause the native program to crash on the next JNI call.
 /// Heavily used inside this crate, with `Result::map_err()`.
+/// 
+/// Note: Dropping the `jni::AttachGuard` before clearing the exception may cause a
+/// FATAL EXCEPTION that crashes the application, unless the thread has been attached
+/// to the JVM permanently.
+/// 
+/// TODO: investigate the possibility of registering the `UncaughtExceptionHandler`,
+/// and even posting a dead loop of a try-catch block for `Looper.loop()` to the Java
+/// side main looper.
 #[inline]
 pub fn jni_clear_ex(err: Error) -> Error {
     jni_clear_ex_inner(err, true, true)

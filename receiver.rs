@@ -34,7 +34,11 @@ impl std::ops::Deref for BroadcastReceiver {
 impl Drop for BroadcastReceiver {
     fn drop(&mut self) {
         if !self.forget {
-            let _ = self.unregister_inner().map_err(crate::jni_clear_ex_ignore);
+            if let Ok(env) = &mut jni_attach_vm() {
+                let _ = self
+                    .unregister_inner(env)
+                    .map_err(crate::jni_clear_ex_ignore);
+            }
         }
     }
 }
@@ -118,11 +122,11 @@ impl BroadcastReceiver {
     /// registered for this receiver will be removed.
     #[inline(always)]
     pub fn unregister(&self) -> Result<(), Error> {
-        self.unregister_inner().map_err(jni_clear_ex)
+        let env = &mut jni_attach_vm()?;
+        self.unregister_inner(env).map_err(jni_clear_ex)
     }
 
-    fn unregister_inner(&self) -> Result<(), Error> {
-        let env = &mut jni_attach_vm()?;
+    fn unregister_inner(&self, env: &mut JNIEnv<'_>) -> Result<(), Error> {
         let context = android_context();
         env.call_method(
             context,

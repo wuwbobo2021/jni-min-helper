@@ -29,10 +29,10 @@ public class InvocHdl implements InvocationHandler {
                 return false;
             }
             InvocHdl other = (InvocHdl) args[0];
-            return new Boolean(this.getId() == other.getId());
+            return Boolean.valueOf(this.getId() == other.getId());
         }
         if (methodName.equals("hashCode")) {
-            return new Integer(System.identityHashCode(this));
+            return Integer.valueOf(System.identityHashCode(this));
         }
         if (methodName.equals("toString")) {
             return "rust.jniminhelper.InvocHdl[" + this.rust_hdl_id + "]";
