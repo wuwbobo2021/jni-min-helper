@@ -19,7 +19,7 @@ Of course, the dex class loader and the broadcast receiver are not available. Ca
 
 ## Android
 
-Configure environment variables required by [android-build](https://docs.rs/android-build/latest/android_build); make sure the Rust target `aarch64-linux-android` and [cargo-apk](https://docs.rs/crate/cargo-apk/latest) are installed.
+Make sure the Android SDK, Rust target `aarch64-linux-android` and [cargo-apk](https://docs.rs/crate/cargo-apk/latest) are installed.
 
 ### Registering a broadcast receiver
 
@@ -274,8 +274,7 @@ fn chooser_dialog<'a>(
     let choice_items: &JObjectArray<'_> = choice_items.as_ref().into();
     for (i, choice_name) in choices.iter().enumerate() {
         let choice_name = choice_name.new_jobject(env)?;
-        env.set_object_array_element(choice_items, i as jsize, &choice_name)
-            .unwrap();
+        env.set_object_array_element(choice_items, i as jsize, &choice_name)?;
     }
 
     let (tx1, rx) = mpsc::channel();
@@ -291,8 +290,7 @@ fn chooser_dialog<'a>(
             }
             JniProxy::void(env)
         },
-    )
-    .unwrap();
+    )?;
 
     // creates OnDismissListener
     let on_dismiss_listener = JniProxy::build(
@@ -304,8 +302,7 @@ fn chooser_dialog<'a>(
             }
             JniProxy::void(env)
         },
-    )
-    .unwrap();
+    )?;
 
     // configure the dialog builder
     env.call_method(

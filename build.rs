@@ -1,6 +1,7 @@
-// Based on:
-// <https://docs.rs/crate/i-slint-backend-android-activity/1.8.0/source/build.rs>
-// <https://docs.rs/crate/robius-authentication/0.1.1/source/build.rs>
+// Based on <https://docs.rs/crate/i-slint-backend-android-activity/1.9.1/source/build.rs>.
+// Note: Newer JDK versions (including JDK 21 and above) may not work with Android D8
+// if there are anonymous classes in the Java code, which produces files like `Cls$1.class`.
+// The current `jni-min-helper` doesn't use anonymous classes.
 
 use std::{env, fs, path::PathBuf, process::Command};
 
@@ -17,16 +18,15 @@ fn main() {
 
     if target_os == "android" {
         println!("cargo:rerun-if-changed=BroadcastRec.java");
-        let broadcast_rec_src_path = src_dir.join("BroadcastRec.java");
-
+        let src_paths = [invoc_hdl_src_path, src_dir.join("BroadcastRec.java")];
         let out_class_paths = [
             out_class_dir.join("InvocHdl.class"),
             out_class_dir.join("BroadcastRec.class"),
             out_class_dir.join("BroadcastRec$BroadcastRecHdl.class"),
         ];
 
-        let android_jar_path = android_build::android_jar(None);
-        let d8_jar_path = android_build::android_d8_jar(None);
+        let android_jar_path = get_android_jar_path();
+        let d8_jar_path = get_d8_jar_path();
 
         let buildable = if javac_path_ver.is_none() {
             println!("cargo::warning=Failed to locate java home.");
@@ -42,20 +42,19 @@ fn main() {
         };
 
         if buildable {
-            let (java_ver, android_jar_path, d8_jar_path) = (
-                javac_path_ver.unwrap().1,
+            let ((javac, java_ver), android_jar_path, d8_jar_path) = (
+                javac_path_ver.unwrap(),
                 android_jar_path.unwrap(),
                 d8_jar_path.unwrap(),
             );
             // Compiles .java files into .class files.
             assert!(
-                android_build::JavaBuild::new()
-                    .class_path(android_jar_path.clone())
-                    .classes_out_dir(out_dir.clone())
-                    .file(invoc_hdl_src_path)
-                    .file(broadcast_rec_src_path)
-                    .command()
-                    .expect("Failed to generate javac command")
+                Command::new(javac)
+                    .arg("-classpath")
+                    .arg(&android_jar_path)
+                    .arg("-d")
+                    .arg(&out_dir)
+                    .args(&src_paths)
                     .args(if java_ver != 8 {
                         &["--release", "8"]
                     } else {
@@ -67,18 +66,22 @@ fn main() {
                 "javac invocation failed"
             );
             // Makes the dex file.
+            let java = PathBuf::from(java_locator::locate_java_home().unwrap())
+                .join("bin")
+                .join("java");
             assert!(
-                android_build::JavaRun::new()
-                    .class_path(d8_jar_path)
-                    .main_class("com.android.tools.r8.D8")
+                Command::new(java)
+                    .arg("-classpath")
+                    .arg(d8_jar_path)
+                    .arg("com.android.tools.r8.D8")
                     .arg("--classpath")
                     .arg(android_jar_path)
                     .arg("--output")
-                    .arg(out_dir.as_os_str())
+                    .arg(out_dir)
                     .arg("--min-api")
                     .arg("20") // disable multidex
                     .args(out_class_paths.iter())
-                    .run()
+                    .status()
                     .expect("Failed to acquire exit status for java d8.jar invocation")
                     .success(),
                 "java d8.jar invocation failed"
@@ -165,4 +168,34 @@ fn get_javac_path_ver() -> Option<(PathBuf, i32)> {
         panic!("The minimum required version is Java 8. Detected Java version: {java_ver}");
     }
     Some((javac, java_ver))
+}
+
+fn get_android_home() -> Option<PathBuf> {
+    env_var("ANDROID_HOME")
+        .or_else(|_| env_var("ANDROID_SDK_ROOT"))
+        .map(|var| PathBuf::from(var))
+        .ok()
+}
+
+fn get_android_jar_path() -> Option<PathBuf> {
+    let android_home = get_android_home()?;
+    find_latest_version(android_home.join("platforms"), "android.jar")
+}
+
+fn get_d8_jar_path() -> Option<PathBuf> {
+    let android_home = get_android_home()?;
+    find_latest_version(android_home.join("build-tools"), "lib").map(|path| path.join("d8.jar"))
+}
+
+fn env_var(var: &str) -> Result<String, env::VarError> {
+    println!("cargo:rerun-if-env-changed={}", var);
+    env::var(var)
+}
+
+fn find_latest_version(base: PathBuf, arg: &str) -> Option<PathBuf> {
+    fs::read_dir(base)
+        .ok()?
+        .filter_map(|entry| Some(entry.ok()?.path().join(arg)))
+        .filter(|path| path.exists())
+        .max()
 }
