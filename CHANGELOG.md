@@ -1,5 +1,9 @@
 # Changes
 
+## 0.2.3
+* Fixed the bug of panicking during building instead of using the prebuilt dex fallback when some environment variables required by `android-build` are missing.
+* Removed `android-build` build dependency, because of its complicated configuration.
+
 ## 0.2.2
 * Fixed the problem of possible fatal exception when calling `BroadcastReceiver::unregister()` for an unregistered receiver.
 * Eliminated the `javac` warning for `InvocHdl.java`.
