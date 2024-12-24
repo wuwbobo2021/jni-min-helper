@@ -266,8 +266,7 @@ pub fn android_context() -> &'static JObject<'static> {
             // Safety: as documented in `cargo-apk` example to obtain the context's JNI reference.
             // It's set by `android_activity`, got from `ANativeActivity_onCreate()` entry, and it
             // can be used across threads, thus it should be a global reference by itself.
-            // let obj = unsafe { JObject::from_raw(ctx.context().cast()) };
-            let obj = JObject::null();
+            let obj = unsafe { JObject::from_raw(ctx.context().cast()) };
             if !obj.is_null() {
                 env.new_global_ref(obj).unwrap()
             } else {
