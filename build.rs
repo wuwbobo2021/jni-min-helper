@@ -173,7 +173,7 @@ fn get_javac_path_ver() -> Option<(PathBuf, i32)> {
 fn get_android_home() -> Option<PathBuf> {
     env_var("ANDROID_HOME")
         .or_else(|_| env_var("ANDROID_SDK_ROOT"))
-        .map(|var| PathBuf::from(var))
+        .map(PathBuf::from)
         .ok()
 }
 

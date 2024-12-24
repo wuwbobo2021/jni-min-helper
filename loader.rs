@@ -1,7 +1,4 @@
-use crate::{
-    convert::*, jni_attach_vm, jni_clear_ex_ignore, jni_last_cleared_ex, AutoLocalGlobalize,
-    JObjectAutoLocal,
-};
+use crate::{convert::*, jni_attach_vm, jni_clear_ex_ignore, AutoLocalGlobalize, JObjectAutoLocal};
 use jni::{errors::Error, objects::*};
 use std::sync::OnceLock;
 
@@ -101,7 +98,6 @@ impl JniClassLoader {
         {
             return Ok(cls);
         }
-        let _ = jni_last_cleared_ex();
 
         let class_name = class_name_to_java(name).new_jobject(env)?;
         env.call_method(
@@ -256,6 +252,12 @@ impl JniClassLoader {
 #[cfg(target_os = "android")]
 #[inline(always)]
 pub fn android_context() -> &'static JObject<'static> {
+    // `warn!` doesn't work inside the closure for `get_or_init()`.
+    if ndk_context::android_context().context().is_null() {
+        warn!("`ndk_context::android_context().context()` is null. Check the Android glue crate.");
+        warn!("Using `Application` (No `Activity` and UI availability); other crates may fail.");
+    }
+
     static ANDROID_CONTEXT: OnceLock<GlobalRef> = OnceLock::new();
     ANDROID_CONTEXT
         .get_or_init(|| {
@@ -264,8 +266,25 @@ pub fn android_context() -> &'static JObject<'static> {
             // Safety: as documented in `cargo-apk` example to obtain the context's JNI reference.
             // It's set by `android_activity`, got from `ANativeActivity_onCreate()` entry, and it
             // can be used across threads, thus it should be a global reference by itself.
-            let obj = unsafe { JObject::from_raw(ctx.context().cast()) };
-            env.new_global_ref(obj).unwrap()
+            // let obj = unsafe { JObject::from_raw(ctx.context().cast()) };
+            let obj = JObject::null();
+            if !obj.is_null() {
+                env.new_global_ref(obj).unwrap()
+            } else {
+                let at = env
+                    .call_static_method(
+                        "android/app/ActivityThread",
+                        "currentActivityThread",
+                        "()Landroid/app/ActivityThread;",
+                        &[],
+                    )
+                    .get_object(env)
+                    .unwrap();
+                env.call_method(at, "getApplication", "()Landroid/app/Application;", &[])
+                    .get_object(env)
+                    .globalize(env)
+                    .unwrap()
+            }
         })
         .as_obj()
 }

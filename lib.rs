@@ -110,8 +110,8 @@ pub fn jni_clear_ex(err: Error) -> Error {
     jni_clear_ex_inner(err, true, true)
 }
 
-/// It is the same as `jni_clear_ex()` without printing exception information. Use it with
-/// `Result::map_err()` prior to functions from this crate to avoid exception printing.
+/// It is the same as `jni_clear_ex()` without printing error information. Use it with
+/// `Result::map_err()` prior to functions from this crate to avoid error printing.
 #[inline]
 pub fn jni_clear_ex_silent(err: Error) -> Error {
     jni_clear_ex_inner(err, false, true)
@@ -132,14 +132,16 @@ pub fn jni_last_cleared_ex() -> Option<GlobalRef> {
 }
 
 #[inline(always)]
-fn jni_clear_ex_inner(err: Error, print_ex: bool, store_ex: bool) -> Error {
+fn jni_clear_ex_inner(err: Error, print_err: bool, store_ex: bool) -> Error {
+    let thread_id = std::thread::current().id();
+
     if let Error::JavaException = err {
         let env = &mut jni_attach_vm().unwrap();
         if env.exception_check().unwrap_or(true) {
-            let ex = env.exception_occurred();
+            let ex = env.exception_occurred(); // returns Result<JThrowable<'local>>
 
             #[cfg(not(target_os = "android"))]
-            if print_ex {
+            if print_err {
                 // This (and Java `printStackTrace()` with `PrintWriter`) may not work on Android.
                 // Don't do it before `exception_check()` or `exception_occurred()`!
                 let _ = env.exception_describe();
@@ -147,16 +149,17 @@ fn jni_clear_ex_inner(err: Error, print_ex: bool, store_ex: bool) -> Error {
             env.exception_clear().unwrap(); // panic if unable to clear
 
             if let Ok(ex) = ex.global_ref(env) {
-                #[cfg(target_os = "android")]
-                if print_ex {
-                    let thread_id = std::thread::current().id();
+                if print_err {
+                    // This is required for Android because `env.exception_describe()` may not work.
+                    #[cfg(target_os = "android")]
                     if let Ok(ex_msg) = ex.get_throwable_msg(env) {
                         let ex_type = class_name_to_java(&ex.get_class_name(env).unwrap());
                         warn!("Exception in thread \"{thread_id:?}\" {ex_type}: {ex_msg}");
                     } else {
                         warn!("Unknown Java exception in thread \"{thread_id:?}\"");
                     }
-                    warn!("{}", std::backtrace::Backtrace::force_capture());
+                    // print for all platforms
+                    print_rust_stack();
                 }
                 if store_ex {
                     // prepare for `jni_last_cleared_ex()`
@@ -164,8 +167,27 @@ fn jni_clear_ex_inner(err: Error, print_ex: bool, store_ex: bool) -> Error {
                 }
             }
         }
+    } else if print_err {
+        warn!("JNI Error in thread \"{thread_id:?}\": {err:?}");
+        print_rust_stack();
     }
     err
+}
+
+fn print_rust_stack() {
+    use std::backtrace::*;
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let backtrace = Backtrace::capture();
+        if let BacktraceStatus::Captured = backtrace.status() {
+            warn!("{}", backtrace);
+        }
+    }
+
+    // `RUST_BACKTRACE` environment variable may not work on Android.
+    #[cfg(target_os = "android")]
+    warn!("\n{}", Backtrace::force_capture());
 }
 
 /// Used for calling `jni_clear_ex()` and turning an owned `JObject<'_>` reference (which leaks
