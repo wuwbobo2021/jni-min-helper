@@ -1,6 +1,6 @@
 [package]
 name = "jni-min-helper"
-version = "0.2.5"
+version = "0.2.6"
 authors = ["wuwbobo2021 <wuwbobo@outlook.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -18,7 +18,7 @@ min_sdk_version = 16
 target_sdk_version = 30
 
 [package.metadata.docs.rs]
-all-features = true
+features = ["futures"]
 default-target = "aarch64-linux-android"
 targets = [
     "aarch64-linux-android",
@@ -46,6 +46,12 @@ java-locator = "0.1.8"
 
 [features]
 default = []
+
+# Disables `JniProxy` and anything that depends on it (e.g. `BroadcastReceiver`),
+# as well as the dex/class building process. Features listed below will be ignored.
+no-proxy = []
+
+# Enables `BroadcastWaiter`, which is based on `BroadcastReceiver`.
 futures = [
     "dep:futures-core",
     "dep:futures-timer",

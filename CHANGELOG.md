@@ -1,5 +1,8 @@
 # Changes
 
+## 0.2.6
+* Added `no-proxy` cargo feature, it disables `JniProxy` and anything that depends on it (e.g. `BroadcastReceiver`), as well as the dex/class building process.
+
 ## 0.2.5
 * Prints Rust stack trace for PC platforms and for JNI errors other than Java exceptions.
 * Gets the Android context object from `ActivityThread.currentActivityThread().getApplication()` and prints a warning message in case of `ndk_context::android_context().context()` is null: functionalities related to the UI or `Activity` will not work, and the glue crate should be checked.

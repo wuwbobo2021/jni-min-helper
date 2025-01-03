@@ -1,16 +1,21 @@
 use crate::{convert::*, jni_attach_vm, jni_clear_ex_ignore, AutoLocalGlobalize, JObjectAutoLocal};
 use jni::{errors::Error, objects::*};
+
+#[allow(unused)]
 use std::sync::OnceLock;
 
+#[cfg(not(feature = "no-proxy"))]
 #[cfg(not(target_os = "android"))]
 const CLASS_DATA: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/rust/jniminhelper/InvocHdl.class"
 ));
 
+#[cfg(not(feature = "no-proxy"))]
 #[cfg(target_os = "android")]
 const DEX_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/classes.dex"));
 
+#[cfg(not(feature = "no-proxy"))]
 pub(crate) fn get_helper_class_loader() -> Result<&'static JniClassLoader, Error> {
     static CLASS_LOADER: OnceLock<JniClassLoader> = OnceLock::new();
     #[cfg(not(target_os = "android"))]

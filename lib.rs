@@ -11,8 +11,12 @@
 
 pub use jni;
 
-pub use {convert::*, loader::*, proxy::*};
+pub use {convert::*, loader::*};
 
+#[cfg(not(feature = "no-proxy"))]
+pub use proxy::*;
+
+#[cfg(not(feature = "no-proxy"))]
 #[cfg(target_os = "android")]
 pub use receiver::*;
 
@@ -28,8 +32,11 @@ macro_rules! warn {
 
 mod convert;
 mod loader;
+
+#[cfg(not(feature = "no-proxy"))]
 mod proxy;
 
+#[cfg(not(feature = "no-proxy"))]
 #[cfg(target_os = "android")]
 mod receiver;
 

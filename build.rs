@@ -1,4 +1,4 @@
-// Based on <https://docs.rs/crate/i-slint-backend-android-activity/1.9.1/source/build.rs>.
+// Inspired by the build script of crate `i-slint-backend-android-activity`.
 // Note: Newer JDK versions (including JDK 21 and above) may not work with Android D8
 // if there are anonymous classes in the Java code, which produces files like `Cls$1.class`.
 // The current `jni-min-helper` doesn't use anonymous classes.
@@ -6,6 +6,10 @@
 use std::{env, fs, path::PathBuf, process::Command};
 
 fn main() {
+    if env::var("CARGO_FEATURE_NO_PROXY").is_ok() {
+        return;
+    }
+
     let javac_path_ver = get_javac_path_ver();
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
 
