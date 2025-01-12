@@ -89,19 +89,18 @@ fn compile_java_source(
         cmd.arg(java_src);
     }
 
+    use std::path::MAIN_SEPARATOR;
+    let seperator = if MAIN_SEPARATOR == '\\' { ";" } else { ":" };
     let mut classpath_param = std::ffi::OsString::new();
-    let seperator = if std::path::MAIN_SEPARATOR == '\\' {
-        ";"
-    } else {
-        ":"
-    };
     for class_path in class_paths {
         classpath_param.push(class_path.as_os_str());
         classpath_param.push(seperator);
     }
     let mut classpath_param = classpath_param.into_string().unwrap();
     let _ = classpath_param.pop(); // remove the last seperator
-    cmd.arg("-classpath").arg(classpath_param);
+    if !classpath_param.is_empty() {
+        cmd.arg("-classpath").arg(classpath_param);
+    }
 
     cmd.arg("-d").arg(output_dir);
     if java_ver > 8 {

@@ -10,6 +10,7 @@ use jni::{
     JNIEnv, NativeMethod,
 };
 use std::{
+    cell::Cell,
     collections::HashMap,
     sync::{Arc, LazyLock, Mutex, OnceLock},
     time::Instant,
@@ -29,6 +30,11 @@ static RUST_HANDLERS: LazyLock<Mutex<HashMap<i64, Arc<RustHandler>>>> =
 type RustHandler = dyn for<'a> Fn(&mut JNIEnv<'a>, &JObject<'a>, &[&JObject<'a>]) -> Result<AutoLocal<'a>, Error>
     + Send
     + Sync;
+
+// This indicates the invoked proxy ID for the Rust handler; it should be `None` elsewhere.
+thread_local! {
+    static CURRENT_PROXY_ID: Cell<Option<i64>> = const { Cell::new(None) };
+}
 
 /// Java dynamic proxy with an invocation handler backed by the Rust closure.
 ///
@@ -51,8 +57,9 @@ type RustHandler = dyn for<'a> Fn(&mut JNIEnv<'a>, &JObject<'a>, &[&JObject<'a>]
 ///     |env, method, args| {
 ///         assert_eq!(args.len(), 0);
 ///         format!(
-///             "Method `{}` is called with proxy.",
-///             method.get_method_name(env)?
+///             "Method `{}` is called with proxy {}.",
+///             method.get_method_name(env)?,
+///             JniProxy::current_proxy_id().unwrap()
 ///         )
 ///         .new_jobject(env)
 ///     }
@@ -64,7 +71,7 @@ type RustHandler = dyn for<'a> Fn(&mut JNIEnv<'a>, &JObject<'a>, &[&JObject<'a>]
 ///     .unwrap() // panic here if the handler returned an error
 ///     .get_string(env)
 ///     .unwrap();
-/// assert_eq!(result, "Method `call` is called with proxy.");
+/// assert_eq!(result, format!("Method `call` is called with proxy {}.", proxy.id()));
 ///
 /// // Now throw an exception inside the handler
 /// let _ = jni_last_cleared_ex(); // discards it
@@ -227,6 +234,11 @@ impl JniProxy {
     pub fn void<'a>(env: &JNIEnv<'a>) -> Result<AutoLocal<'a>, Error> {
         Ok(JObject::null()).auto_local(env)
     }
+
+    /// Gets the invoked proxy ID inside the Rust handler; returns `None` elsewhere.
+    pub fn current_proxy_id() -> Option<i64> {
+        CURRENT_PROXY_ID.get()
+    }
 }
 
 fn get_invoc_hdl_class() -> Result<&'static JObject<'static>, Error> {
@@ -279,7 +291,7 @@ fn read_object_array<'e>(
 
 // Its local reference parameters are casted from their C counterparts,
 // they don't cause memory leak problem.
-unsafe extern "C" fn rust_callback<'a>(
+extern "C" fn rust_callback<'a>(
     mut env: JNIEnv<'a>,
     _this: JObject<'a>,
     rust_hdl_id: jlong,
@@ -298,9 +310,11 @@ unsafe extern "C" fn rust_callback<'a>(
 
     let args = read_object_array(&args, &mut env).unwrap_or_default();
     let args: Vec<_> = args.iter().map(|o| o.as_ref()).collect();
+    CURRENT_PROXY_ID.replace(Some(rust_hdl_id as i64));
 
     let result = rust_hdl(&mut env, &method, &args);
 
+    let _ = CURRENT_PROXY_ID.take();
     match result {
         Ok(obj) => obj.forget(),
         Err(Error::JavaException) => {
