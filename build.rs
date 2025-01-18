@@ -1,5 +1,6 @@
 // Inspired by the build script of crate `i-slint-backend-android-activity`.
-// For the Android target, new source files and even .jar dependencies can be added easily.
+// For the Android target, new source files and even .jar dependencies can be added easily:
+// add the jar in `class_paths` of `compile_java_source` and `jar_dependencies` of `build_dex_file`.
 // Note: Newer JDK versions (including JDK 21 and above) may not work with Android D8
 // if there are anonymous classes in the Java code, which produces files like `Cls$1.class`
 // (fixed in build tools 35.0.0 ?). Currently `jni-min-helper` doesn't use anonymous classes.
@@ -29,16 +30,24 @@ fn main() {
     if target_os == "android" {
         let sources = collect_files_with_ext(&src_dir, "java").unwrap();
         let android_jar = get_android_jar_path();
+
+        let out_cls_dir = out_dir.join("classes");
+        if out_cls_dir.try_exists().unwrap() {
+            fs::remove_dir_all(&out_cls_dir).unwrap();
+        }
+        fs::create_dir(&out_cls_dir).unwrap();
+
         let mut err_string = None;
         if android_jar.is_none() {
             err_string.replace("Failed to find android.jar.".to_string());
-        } else if let Err(s) = compile_java_source(sources, [android_jar.unwrap()], out_dir.clone())
+        } else if let Err(s) =
+            compile_java_source(sources, [android_jar.unwrap()], out_cls_dir.clone())
         {
             err_string.replace(s);
-        } else if let Err(s) = build_dex_file(out_dir.clone(), [], out_dir.clone()) {
-            // TODO: clean up OUT_DIR before `build_dex_file` in case of some classes were removed.
+        } else if let Err(s) = build_dex_file(out_cls_dir.clone(), [], out_dir.clone()) {
             err_string.replace(s);
         };
+
         if let Some(s) = err_string {
             for line in s.lines() {
                 println!("cargo::warning={line}");
@@ -93,6 +102,7 @@ fn compile_java_source(
     let seperator = if MAIN_SEPARATOR == '\\' { ";" } else { ":" };
     let mut classpath_param = std::ffi::OsString::new();
     for class_path in class_paths {
+        println!("cargo:rerun-if-changed={}", class_path.to_string_lossy());
         classpath_param.push(class_path.as_os_str());
         classpath_param.push(seperator);
     }
@@ -122,6 +132,7 @@ fn compile_java_source(
     }
 }
 
+/// Reference: <https://developer.android.com/tools/d8>
 fn build_dex_file(
     compiled_classes_path: PathBuf,
     jar_dependencies: impl IntoIterator<Item = PathBuf>,
@@ -142,12 +153,16 @@ fn build_dex_file(
         .arg("com.android.tools.r8.D8");
     cmd.arg("--lib").arg(android_jar_path);
     for dependency in dependencies.iter() {
+        println!("cargo:rerun-if-changed={}", dependency.to_string_lossy());
         cmd.arg("--classpath").arg(dependency);
     }
     cmd.arg("--classpath").arg(compiled_classes_path);
     cmd.arg("--output").arg(output_dir);
     // disable multidex (workaround for the DexClassLoader before Android 8.0)
     cmd.arg("--min-api").arg("20");
+    if env::var("PROFILE") == Ok("release".to_string()) {
+        cmd.arg("--release");
+    }
     cmd.args(compiled_classes).args(dependencies.iter());
 
     // Execute the command
@@ -186,7 +201,11 @@ fn get_java_home_ver() -> Result<(PathBuf, i32), String> {
         // old versions of java use stderr
         version_output = String::from_utf8_lossy(&output.stderr);
     }
-    let version = version_output.split_whitespace().nth(1).unwrap_or_default();
+    let version = version_output
+        .split_whitespace()
+        .nth(1)
+        .and_then(|v| v.split('-').next())
+        .unwrap_or_default();
     let mut java_ver: i32 = version
         .split('.')
         .next()

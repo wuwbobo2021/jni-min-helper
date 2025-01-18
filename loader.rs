@@ -134,11 +134,17 @@ impl JniClassLoader {
     /// Creates a `dalvik.system.DexClassLoader` from given dex file data embeded at
     /// compile time. This function may do heavy operations.
     pub fn load_dex(dex_data: &'static [u8]) -> Result<Self, Error> {
-        let env = &mut jni_attach_vm()?;
-        let context = android_context();
-
         // required before API level 29
         let parent_class_loader = Self::app_loader()?;
+        // create the new class loader
+        parent_class_loader.append_dex(dex_data)
+    }
+
+    /// Creates a `dalvik.system.DexClassLoader` from given dex file data embeded at compile time,
+    /// having the current loader as the parent loader. This function may do heavy operations.
+    pub fn append_dex(&self, dex_data: &'static [u8]) -> Result<Self, Error> {
+        let env = &mut jni_attach_vm()?;
+        let context = android_context();
 
         if android_api_level() >= 26 {
             // Safety: dex_data is 'static and the `InMemoryDexClassLoader`` will not mutate it.
@@ -152,89 +158,46 @@ impl JniClassLoader {
             env.new_object(
                 "dalvik/system/InMemoryDexClassLoader",
                 "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V",
-                &[(&dex_buffer).into(), (&parent_class_loader).into()],
+                &[(&dex_buffer).into(), self.into()],
             )
         } else {
-            // the dex data must be written in a file
-            let dex_byte_array = env.byte_array_from_slice(dex_data).auto_local(env)?;
-            let dex_data_len = dex_data.len() as i32;
-            // calculates the hash for a unique dex name, which may determine the name of
-            // the oat file, which may be mapped to the virtual memory for execution.
-            let dex_hash = {
-                use std::hash::{DefaultHasher, Hasher};
-                let mut hasher = DefaultHasher::new();
-                hasher.write(dex_data);
-                hasher.finish()
-            };
-            // determines the code cache dir path in the application code cache directory
+            // The dex data must be written in a file; this determines the output
+            // directory path inside the application code cache directory.
             let code_cache_path = if android_api_level() >= 21 {
                 env.call_method(context, "getCodeCacheDir", "()Ljava/io/File;", &[])
-                    .get_object(env)?
             } else {
                 let dir_name = "code_cache".new_jobject(env)?;
+                // create if needed
                 env.call_method(
                     context,
                     "getDir",
                     "(Ljava/lang/String;I)Ljava/io/File;",
                     &[(&dir_name).into(), 0.into()],
                 )
-                .get_object(env)?
-            };
-            // generates the dex file path.
-            let dex_name = format!("{:016x}.dex", dex_hash).new_jobject(env)?;
-            let dex_file_path = env
-                .new_object(
-                    "java/io/File",
-                    "(Ljava/io/File;Ljava/lang/String;)V",
-                    &[(&code_cache_path).into(), (&dex_name).into()],
-                )
-                .auto_local(env)?;
-            // creates the oats directory
-            let oats_dir_name = "oats".new_jobject(env)?;
-            let oats_dir_path = env
-                .new_object(
-                    "java/io/File",
-                    "(Ljava/io/File;Ljava/lang/String;)V",
-                    &[(&code_cache_path).into(), (&oats_dir_name).into()],
-                )
-                .auto_local(env)?;
-            let _ = env
-                .call_method(&oats_dir_path, "mkdir", "()Z", &[])
-                .get_boolean()?;
-            // turns them to Java string
-            let dex_file_path = env
-                .call_method(
-                    dex_file_path,
-                    "getAbsolutePath",
-                    "()Ljava/lang/String;",
-                    &[],
-                )
-                .get_object(env)?;
-            let oats_dir_path = env
-                .call_method(
-                    oats_dir_path,
-                    "getAbsolutePath",
-                    "()Ljava/lang/String;",
-                    &[],
-                )
-                .get_object(env)?;
+            }
+            .get_object(env)
+            .and_then(|p| env.call_method(&p, "getAbsolutePath", "()Ljava/lang/String;", &[]))
+            .get_object(env)?
+            .get_string(env)
+            .map(std::path::PathBuf::from)?;
 
-            // writes the dex data
-            let write_stream = env
-                .new_object(
-                    "java/io/FileOutputStream",
-                    "(Ljava/lang/String;)V",
-                    &[(&dex_file_path).into()],
-                )
-                .auto_local(env)?;
-            env.call_method(
-                &write_stream,
-                "write",
-                "([BII)V",
-                &[(&dex_byte_array).into(), 0.into(), dex_data_len.into()],
-            )
-            .clear_ex()?;
-            env.call_method(&write_stream, "close", "()V", &[]).unwrap();
+            // Creates the dex file. before creating, calculate the hash for a unique dex name, which
+            // may determine names of oat files, which may be mapped to the virtual memory for execution.
+            let dex_hash = {
+                use std::hash::{DefaultHasher, Hasher};
+                let mut hasher = DefaultHasher::new();
+                hasher.write(dex_data);
+                hasher.finish()
+            };
+            let dex_name = format!("{:016x}.dex", dex_hash);
+            let dex_file_path = code_cache_path.join(dex_name);
+            std::fs::write(&dex_file_path, dex_data).unwrap(); // Note: this panics on failure
+            let dex_file_path = dex_file_path.to_string_lossy().new_jobject(env)?;
+
+            // creates the oats directory
+            let oats_dir_path = code_cache_path.join("oats");
+            let _ = std::fs::create_dir(&oats_dir_path);
+            let oats_dir_path = oats_dir_path.to_string_lossy().new_jobject(env)?;
 
             // loads the dex file
             env.new_object(
@@ -244,7 +207,7 @@ impl JniClassLoader {
                     (&dex_file_path).into(),
                     (&oats_dir_path).into(),
                     (&JObject::null()).into(),
-                    (&parent_class_loader).into(),
+                    self.into(),
                 ],
             )
         }
@@ -257,40 +220,39 @@ impl JniClassLoader {
 #[cfg(target_os = "android")]
 #[inline(always)]
 pub fn android_context() -> &'static JObject<'static> {
-    // `warn!` doesn't work inside the closure for `get_or_init()`.
-    if ndk_context::android_context().context().is_null() {
+    static ANDROID_CONTEXT: OnceLock<(GlobalRef, bool)> = OnceLock::new();
+    let (ctx, from_glue_crate) = ANDROID_CONTEXT.get_or_init(|| {
+        let env = &mut jni_attach_vm().unwrap();
+        let ctx = ndk_context::android_context();
+        // Safety: as documented in `cargo-apk` example to obtain the context's JNI reference.
+        // It's set by `android_activity`, got from `ANativeActivity_onCreate()` entry, and it
+        // can be used across threads, thus it should be a global reference by itself.
+        let obj = unsafe { JObject::from_raw(ctx.context().cast()) };
+        if !obj.is_null() {
+            (env.new_global_ref(obj).unwrap(), true)
+        } else {
+            let at = env
+                .call_static_method(
+                    "android/app/ActivityThread",
+                    "currentActivityThread",
+                    "()Landroid/app/ActivityThread;",
+                    &[],
+                )
+                .get_object(env)
+                .unwrap();
+            env.call_method(at, "getApplication", "()Landroid/app/Application;", &[])
+                .get_object(env)
+                .globalize(env)
+                .map(|ctx| (ctx, false))
+                .unwrap()
+        }
+    });
+    if !from_glue_crate {
+        // `warn!` doesn't work inside the closure for `get_or_init()`.
         warn!("`ndk_context::android_context().context()` is null. Check the Android glue crate.");
         warn!("Using `Application` (No `Activity` and UI availability); other crates may fail.");
     }
-
-    static ANDROID_CONTEXT: OnceLock<GlobalRef> = OnceLock::new();
-    ANDROID_CONTEXT
-        .get_or_init(|| {
-            let env = &mut jni_attach_vm().unwrap();
-            let ctx = ndk_context::android_context();
-            // Safety: as documented in `cargo-apk` example to obtain the context's JNI reference.
-            // It's set by `android_activity`, got from `ANativeActivity_onCreate()` entry, and it
-            // can be used across threads, thus it should be a global reference by itself.
-            let obj = unsafe { JObject::from_raw(ctx.context().cast()) };
-            if !obj.is_null() {
-                env.new_global_ref(obj).unwrap()
-            } else {
-                let at = env
-                    .call_static_method(
-                        "android/app/ActivityThread",
-                        "currentActivityThread",
-                        "()Landroid/app/ActivityThread;",
-                        &[],
-                    )
-                    .get_object(env)
-                    .unwrap();
-                env.call_method(at, "getApplication", "()Landroid/app/Application;", &[])
-                    .get_object(env)
-                    .globalize(env)
-                    .unwrap()
-            }
-        })
-        .as_obj()
+    ctx.as_obj()
 }
 
 /// Gets the API level (SDK version) of the current Android OS.

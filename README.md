@@ -19,7 +19,7 @@ Of course, the dex class loader and the broadcast receiver are not available. Ca
 
 ## Android
 
-Make sure the Android SDK, Rust target `aarch64-linux-android` and [cargo-apk](https://docs.rs/crate/cargo-apk/latest) are installed.
+Make sure the Android SDK, NDK, Rust target `aarch64-linux-android` and [cargo-apk](https://docs.rs/crate/cargo-apk/latest) are installed.
 
 ### Registering a broadcast receiver
 
@@ -32,7 +32,7 @@ publish = false
 
 [dependencies]
 log = "0.4"
-jni-min-helper = "0.2"
+jni-min-helper = "0.2.7"
 android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.14"
 
@@ -332,7 +332,7 @@ fn chooser_dialog<'a>(
     let dialog_builder = Ok(dialog_builder).globalize(env)?;
     let dialog_arc = Arc::new(Mutex::new(None));
     let dialog_arc_2 = dialog_arc.clone(); // Note: a weak reference might be used
-    let _posted_runnable = post_on_java_main_thread(move |env| {
+    JniProxy::post_to_main_looper(move |env| {
         let dialog = env
             .call_method(
                 &dialog_builder,
@@ -356,44 +356,6 @@ fn chooser_dialog<'a>(
         }
         Ok(None)
     }
-}
-
-fn post_on_java_main_thread(
-    runnable: impl Fn(&mut jni::JNIEnv) -> Result<(), jni::errors::Error> + Send + Sync + 'static,
-) -> Result<Option<JniProxy>, jni::errors::Error> {
-    let env = &mut jni_attach_vm()?;
-
-    let runnable = JniProxy::build(None, ["java/lang/Runnable"], move |env, method, _| {
-        if method.get_method_name(env)? == "run" {
-            let _ = runnable(env);
-            let _ = env.exception_clear();
-        }
-        JniProxy::void(env)
-    })?;
-    let main_looper = env
-        .call_static_method(
-            "android/os/Looper",
-            "getMainLooper",
-            "()Landroid/os/Looper;",
-            &[],
-        )
-        .get_object(env)?;
-    let handler = env
-        .new_object(
-            "android/os/Handler",
-            "(Landroid/os/Looper;)V",
-            &[(&main_looper).into()],
-        )
-        .auto_local(env)?;
-    let suc = env
-        .call_method(
-            &handler,
-            "post",
-            "(Ljava/lang/Runnable;)Z",
-            &[(&runnable).into()],
-        )
-        .get_boolean()?;
-    Ok(suc.then_some(runnable))
 }
 
 fn wait_recv<T>(rx: &std::sync::mpsc::Receiver<T>, app: Option<&AndroidApp>) -> Option<T> {

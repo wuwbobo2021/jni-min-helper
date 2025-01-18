@@ -46,7 +46,7 @@ thread_local! {
 /// - <https://docs.oracle.com/javase/8/docs/api/java/lang/reflect/InvocationHandler.html>
 /// - <https://docs.oracle.com/javase/8/docs/api/java/lang/reflect/Proxy.html>
 ///
-/// Note: this cannot create an object of an abstract class, while `javassist` supports it.
+/// TODO: Manage to extend any abstract class (not interface), see `javassist` and `dexmaker`.
 ///
 /// ```
 /// use jni_min_helper::*;
@@ -145,7 +145,7 @@ impl Drop for JniProxy {
             return;
         }
         if let Ok(mut hdls_locked) = RUST_HANDLERS.lock() {
-            hdls_locked.remove(&self.rust_hdl_id);
+            let _ = hdls_locked.remove(&self.rust_hdl_id);
         }
     }
 }
@@ -241,6 +241,59 @@ impl JniProxy {
     }
 }
 
+#[cfg(target_os = "android")]
+impl JniProxy {
+    /// Posts a `Runnable` for the Android main looper thread to do UI-related operations.
+    /// Returns false on failure (usually because the looper is exiting).
+    pub fn post_to_main_looper(
+        runnable: impl Fn(&mut jni::JNIEnv) -> Result<(), Error> + Send + Sync + 'static,
+    ) -> Result<bool, Error> {
+        let env = &mut jni_attach_vm()?;
+        // TODO: cache classes and methods used here.
+        let runnable = JniProxy::build(None, ["java/lang/Runnable"], move |env, method, _| {
+            if method.get_method_name(env)? == "run" {
+                let _ = runnable(env);
+                let _ = env.exception_clear();
+            }
+            if let (Some(cur_id), Ok(mut hdls_locked)) =
+                (JniProxy::current_proxy_id(), RUST_HANDLERS.lock())
+            {
+                let _ = hdls_locked.remove(&cur_id);
+            }
+            JniProxy::void(env)
+        })?;
+        let main_looper = env
+            .call_static_method(
+                "android/os/Looper",
+                "getMainLooper",
+                "()Landroid/os/Looper;",
+                &[],
+            )
+            .get_object(env)?
+            .null_check_owned("android.os.Looper.getMainLooper() returned null")?;
+        let handler = env
+            .new_object(
+                "android/os/Handler",
+                "(Landroid/os/Looper;)V",
+                &[(&main_looper).into()],
+            )
+            .auto_local(env)?;
+        let posted = env
+            .call_method(
+                &handler,
+                "post",
+                "(Ljava/lang/Runnable;)Z",
+                &[(&runnable).into()],
+            )
+            .get_boolean()?;
+        if posted {
+            // the runnable will remove the handler by itself, when it is called for once
+            let _ = runnable.forget();
+        }
+        Ok(posted)
+    }
+}
+
 fn get_invoc_hdl_class() -> Result<&'static JObject<'static>, Error> {
     static INVOC_HDL_CLASS: OnceLock<GlobalRef> = OnceLock::new();
     if INVOC_HDL_CLASS.get().is_none() {
@@ -310,7 +363,7 @@ extern "C" fn rust_callback<'a>(
 
     let args = read_object_array(&args, &mut env).unwrap_or_default();
     let args: Vec<_> = args.iter().map(|o| o.as_ref()).collect();
-    CURRENT_PROXY_ID.replace(Some(rust_hdl_id as i64));
+    CURRENT_PROXY_ID.replace(Some(rust_hdl_id));
 
     let result = rust_hdl(&mut env, &method, &args);
 
