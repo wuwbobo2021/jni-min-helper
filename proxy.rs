@@ -1,5 +1,5 @@
 use crate::{
-    convert::*, jni_attach_vm, jni_clear_ex, jni_last_cleared_ex, loader::*, AutoLocal,
+    convert::*, jni_clear_ex, jni_last_cleared_ex, jni_with_env, loader::*, AutoLocal,
     AutoLocalGlobalize, JObjectAutoLocal,
 };
 use jni::{
@@ -50,60 +50,60 @@ thread_local! {
 ///
 /// ```
 /// use jni_min_helper::*;
-/// let env = &mut jni_attach_vm().unwrap();
-/// let proxy = JniProxy::build(
-///     None,
-///     &["java/util/concurrent/Callable"],
-///     |env, method, args| {
-///         assert_eq!(args.len(), 0);
-///         format!(
-///             "Method `{}` is called with proxy {}.",
-///             method.get_method_name(env)?,
-///             JniProxy::current_proxy_id().unwrap()
+/// jni_with_env(|env| {
+///     let proxy = JniProxy::build(
+///         env,
+///         None,
+///         &["java/util/concurrent/Callable"],
+///         |env, method, args| {
+///             assert_eq!(args.len(), 0);
+///             format!(
+///                 "Method `{}` is called with proxy {}.",
+///                 method.get_method_name(env)?,
+///                 JniProxy::current_proxy_id().unwrap()
+///             )
+///             .new_jobject(env)
+///         }
+///     )?;
+///     let result = env
+///         .call_method(&proxy, "call", "()Ljava/lang/Object;", &[])
+///         .get_object(env)
+///         .unwrap() // panic here if the handler returned an error
+///         .get_string(env)?;
+///     assert_eq!(result, format!("Method `call` is called with proxy {}.", proxy.id()));
+///     
+///     // Now throw an exception inside the handler
+///     let _ = jni_last_cleared_ex(); // discards it
+///     assert!(jni_last_cleared_ex().is_none());
+///     let proxy = JniProxy::build(env, None, &["java/lang/Runnable"], |env, _, _| {
+///         let s = "a".new_jobject(env)?;
+///         let _ = env.call_static_method(
+///             "java/lang/Integer",
+///             "parseInt",
+///             "(Ljava/lang/String;)I",
+///             &[(&s).into()],
 ///         )
-///         .new_jobject(env)
-///     }
-/// )
-/// .unwrap();
-/// let result = env
-///     .call_method(&proxy, "call", "()Ljava/lang/Object;", &[])
-///     .get_object(env)
-///     .unwrap() // panic here if the handler returned an error
-///     .get_string(env)
-///     .unwrap();
-/// assert_eq!(result, format!("Method `call` is called with proxy {}.", proxy.id()));
+///         .get_int()?; // prints exception and throws it
+///         JniProxy::void(env)
+///     })?;
 ///
-/// // Now throw an exception inside the handler
-/// let _ = jni_last_cleared_ex(); // discards it
-/// assert!(jni_last_cleared_ex().is_none());
-/// let proxy = JniProxy::build(None, &["java/lang/Runnable"], |env, _, _| {
-///     let s = "a".new_jobject(env)?;
-///     let _ = env.call_static_method(
-///         "java/lang/Integer",
-///         "parseInt",
-///         "(Ljava/lang/String;)I",
-///         &[(&s).into()],
-///     )
-///     .get_int()?; // prints exception and throws it
-///     JniProxy::void(env)
+///     let result = env
+///         .call_method(&proxy, "run", "()V", &[])
+///         .map_err(jni_clear_ex_silent); // catches
+///     assert!(result.is_err());
+///     let last_ex = jni_last_cleared_ex().unwrap(); // takes it
+///     assert!(last_ex.get_class_name(env).unwrap().contains("NumberFormatException"));
+///     assert!(jni_last_cleared_ex().is_none());
+///
+///     // makes sure that further JNI operations still work
+///     let x = jni::objects::JValue::from(-10);
+///     let val = env
+///         .call_static_method("java/lang/Math", "abs", "(I)I", &[x])
+///         .get_int()?;
+///     assert_eq!(val, 10);
+///     Ok(())
 /// })
 /// .unwrap();
-///
-/// let result = env
-///     .call_method(&proxy, "run", "()V", &[])
-///     .map_err(jni_clear_ex_silent); // catches
-/// assert!(result.is_err());
-/// let last_ex = jni_last_cleared_ex().unwrap(); // takes it
-/// assert!(last_ex.get_class_name(env).unwrap().contains("NumberFormatException"));
-/// assert!(jni_last_cleared_ex().is_none());
-///
-/// // makes sure that further JNI operations still work
-/// let x = jni::objects::JValue::from(-10);
-/// let val = env
-///     .call_static_method("java/lang/Math", "abs", "(I)I", &[x])
-///     .get_int()
-///     .unwrap();
-/// assert_eq!(val, 10);
 /// ```
 #[derive(Debug)]
 pub struct JniProxy {
@@ -167,13 +167,14 @@ impl JniProxy {
     /// may be `ThreadId(1)` in Rust.
     ///
     /// `equals()`, `hashCode()` and `toString()` are already implemented in the Java handler.
-    pub fn build<'a, T, E, I, F>(
+    pub fn build<'e, T, E, I, F>(
+        env: &mut jni::JNIEnv<'e>,
         class_loader: Option<&JObject<'_>>,
         interfaces: I,
         handler: F,
     ) -> Result<Self, Error>
     where
-        T: Desc<'a, JClass<'a>>,
+        T: Desc<'e, JClass<'e>>,
         E: ExactSizeIterator<Item = T>,
         I: IntoIterator<Item = T, IntoIter = E>,
         F: for<'f> Fn(
@@ -185,8 +186,6 @@ impl JniProxy {
             + Sync
             + 'static,
     {
-        let env = &mut jni_attach_vm()?;
-
         // creates a Java class array for interfaces that should be supported
         let interfaces = interfaces.into_iter();
         let arr_interfaces = env
@@ -210,17 +209,17 @@ impl JniProxy {
             .new_object(cls_invoc_hdl, "(J)V", &[id.into()])
             .auto_local(env)?;
         let proxy = env.call_static_method(
-            "java/lang/reflect/Proxy",
-            "newProxyInstance",
-            "(Ljava/lang/ClassLoader;[Ljava/lang/Class;Ljava/lang/reflect/InvocationHandler;)Ljava/lang/Object;",
-            &[
-                class_loader.unwrap_or(&JObject::null()).into(),
-                (&arr_interfaces).into(),
-                (&invoc_hdl).into()
-            ]
-        )
-        .get_object(env)
-        .globalize(env)?;
+                "java/lang/reflect/Proxy",
+                "newProxyInstance",
+                "(Ljava/lang/ClassLoader;[Ljava/lang/Class;Ljava/lang/reflect/InvocationHandler;)Ljava/lang/Object;",
+                &[
+                    class_loader.unwrap_or(&JObject::null()).into(),
+                    (&arr_interfaces).into(),
+                    (&invoc_hdl).into()
+                ]
+            )
+            .get_object(env)
+            .globalize(env)?;
         RUST_HANDLERS.lock().unwrap().insert(id, Arc::new(handler));
         Ok(Self {
             rust_hdl_id: id,
@@ -248,68 +247,71 @@ impl JniProxy {
     pub fn post_to_main_looper(
         runnable: impl Fn(&mut jni::JNIEnv) -> Result<(), Error> + Send + Sync + 'static,
     ) -> Result<bool, Error> {
-        let env = &mut jni_attach_vm()?;
-        // TODO: cache classes and methods used here.
-        let runnable = JniProxy::build(None, ["java/lang/Runnable"], move |env, method, _| {
-            if method.get_method_name(env)? == "run" {
-                let _ = runnable(env);
-                let _ = env.exception_clear();
+        jni_with_env(|env| {
+            // TODO: cache classes and methods used here.
+            let runnable =
+                JniProxy::build(env, None, ["java/lang/Runnable"], move |env, method, _| {
+                    if method.get_method_name(env)? == "run" {
+                        let _ = runnable(env);
+                        let _ = env.exception_clear();
+                    }
+                    if let (Some(cur_id), Ok(mut hdls_locked)) =
+                        (JniProxy::current_proxy_id(), RUST_HANDLERS.lock())
+                    {
+                        let _ = hdls_locked.remove(&cur_id);
+                    }
+                    JniProxy::void(env)
+                })?;
+            let main_looper = env
+                .call_static_method(
+                    "android/os/Looper",
+                    "getMainLooper",
+                    "()Landroid/os/Looper;",
+                    &[],
+                )
+                .get_object(env)?
+                .null_check_owned("android.os.Looper.getMainLooper() returned null")?;
+            let handler = env
+                .new_object(
+                    "android/os/Handler",
+                    "(Landroid/os/Looper;)V",
+                    &[(&main_looper).into()],
+                )
+                .auto_local(env)?;
+            let posted = env
+                .call_method(
+                    &handler,
+                    "post",
+                    "(Ljava/lang/Runnable;)Z",
+                    &[(&runnable).into()],
+                )
+                .get_boolean()?;
+            if posted {
+                // the runnable will remove the handler by itself, when it is called for once
+                let _ = runnable.forget();
             }
-            if let (Some(cur_id), Ok(mut hdls_locked)) =
-                (JniProxy::current_proxy_id(), RUST_HANDLERS.lock())
-            {
-                let _ = hdls_locked.remove(&cur_id);
-            }
-            JniProxy::void(env)
-        })?;
-        let main_looper = env
-            .call_static_method(
-                "android/os/Looper",
-                "getMainLooper",
-                "()Landroid/os/Looper;",
-                &[],
-            )
-            .get_object(env)?
-            .null_check_owned("android.os.Looper.getMainLooper() returned null")?;
-        let handler = env
-            .new_object(
-                "android/os/Handler",
-                "(Landroid/os/Looper;)V",
-                &[(&main_looper).into()],
-            )
-            .auto_local(env)?;
-        let posted = env
-            .call_method(
-                &handler,
-                "post",
-                "(Ljava/lang/Runnable;)Z",
-                &[(&runnable).into()],
-            )
-            .get_boolean()?;
-        if posted {
-            // the runnable will remove the handler by itself, when it is called for once
-            let _ = runnable.forget();
-        }
-        Ok(posted)
+            Ok(posted)
+        })
     }
 }
 
 fn get_invoc_hdl_class() -> Result<&'static JObject<'static>, Error> {
     static INVOC_HDL_CLASS: OnceLock<GlobalRef> = OnceLock::new();
     if INVOC_HDL_CLASS.get().is_none() {
-        let env = &mut jni_attach_vm()?;
-
-        let class_loader = get_helper_class_loader()?;
-        let class = class_loader.load_class("rust/jniminhelper/InvocHdl")?;
-        // register `rust_callback()`
-        let native_method = NativeMethod {
-            name: "rustHdl".into(),
-            sig: "(JLjava/lang/reflect/Method;[Ljava/lang/Object;)Ljava/lang/Object;".into(),
-            fn_ptr: rust_callback as *mut _,
-        };
-        env.register_native_methods(class.as_class(), &[native_method])
-            .map_err(jni_clear_ex)?;
-        let _ = INVOC_HDL_CLASS.set(class);
+        jni_with_env(|env| {
+            let class_loader = get_helper_class_loader()?;
+            let class = class_loader.load_class("rust/jniminhelper/InvocHdl")?;
+            // register `rust_callback()`
+            let native_method = NativeMethod {
+                name: "rustHdl".into(),
+                sig: "(JLjava/lang/reflect/Method;[Ljava/lang/Object;)Ljava/lang/Object;".into(),
+                fn_ptr: rust_callback as *mut _,
+            };
+            env.register_native_methods(class.as_class(), &[native_method])
+                .map_err(jni_clear_ex)?;
+            let _ = INVOC_HDL_CLASS.set(class);
+            Ok(())
+        })?;
     }
     Ok(INVOC_HDL_CLASS.get().unwrap())
 }

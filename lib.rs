@@ -13,10 +13,10 @@ pub use jni;
 
 pub use {convert::*, loader::*};
 
-#[cfg(not(feature = "no-proxy"))]
+#[cfg(feature = "proxy")]
 pub use proxy::*;
 
-#[cfg(not(feature = "no-proxy"))]
+#[cfg(feature = "proxy")]
 #[cfg(target_os = "android")]
 pub use receiver::*;
 
@@ -33,17 +33,17 @@ macro_rules! warn {
 mod convert;
 mod loader;
 
-#[cfg(not(feature = "no-proxy"))]
+#[cfg(feature = "proxy")]
 mod proxy;
 
-#[cfg(not(feature = "no-proxy"))]
+#[cfg(feature = "proxy")]
 #[cfg(target_os = "android")]
 mod receiver;
 
 use jni::{
     errors::Error,
     objects::{GlobalRef, JObject},
-    AttachGuard, JNIEnv, JavaVM,
+    JNIEnv, JavaVM,
 };
 use std::{cell::Cell, sync::OnceLock};
 
@@ -55,24 +55,45 @@ thread_local! {
     static LAST_CLEARED_EX: Cell<Option<GlobalRef>> = const { Cell::new(None) };
 }
 
-/// Attaches the current thread to the JVM after `jni_get_vm()`.
-///
-/// Reference:
-/// <https://docs.rs/jni/latest/jni/struct.JavaVM.html#method.attach_current_thread>
+/// Workaround for <https://github.com/jni-rs/jni-rs/issues/558>.
+/// Calls `jni_get_vm()`, attaches the current thread to the JVM and executes the closure.
+/// The thread may be dettached if it has not been attached previously.
 #[inline(always)]
-pub fn jni_attach_vm<'a>() -> Result<AttachGuard<'a>, Error> {
-    jni_get_vm().attach_current_thread()
+pub fn jni_with_env<R>(f: impl FnOnce(&mut JNIEnv) -> Result<R, Error>) -> Result<R, Error> {
+    let vm = unsafe { jni_get_vm() };
+    let mut guarded_env = vm.attach_current_thread()?;
+    f(&mut guarded_env)
+}
+
+/// Calls `jni_get_vm()` and tries attaching the current thread to the JVM permanently,
+/// in order to make `jni_with_env` faster. Does nothing and returns false if the thread
+/// is currently attached (this behaviour is determined by `jni-rs`).
+///
+/// Note: This blocks JVM exit; `AttachCurrentThreadAsDaemon` is probably unsafe.
+///
+/// To avoid the fatal error "Native thread exiting without having called DetachCurrentThread", check
+/// <https://doc.rust-lang.org/stable/std/thread/struct.LocalKey.html#platform-specific-behavior>.
+pub fn jni_attach_permanently() -> bool {
+    let vm = unsafe { jni_get_vm() };
+    if vm.get_env().is_ok() {
+        return false;
+    }
+    vm.attach_current_thread_permanently().is_ok()
 }
 
 /// Tells this crate to use an existing JVM, instead of launching a new JVM
 /// with no arguments (which may panic on failure). Not available on Android.
+///
+/// Does nothing and returns false if it has been set previously.
+///
+/// # Safety
+///
+/// Do not terminate the corresponding JVM within the application's lifetime.
 #[cfg(not(target_os = "android"))]
-pub fn jni_set_vm(vm: &JavaVM) -> bool {
+pub unsafe fn jni_set_vm(vm: &JavaVM) -> bool {
     if JAVA_VM.get().is_some() {
         false
     } else {
-        // Safety: #[derive(Clone)] is to be added for struct JavaVM(*mut sys::JavaVM),
-        // also check the source code of JNIEnv::get_java_vm().
         let vm = unsafe { JavaVM::from_raw(vm.get_java_vm_pointer()).unwrap() };
         JAVA_VM.set(vm).unwrap();
         true
@@ -81,24 +102,46 @@ pub fn jni_set_vm(vm: &JavaVM) -> bool {
 
 /// Gets the remembered `JavaVM`, otherwise it launches a new JVM with no arguments
 /// (which may panic on failure).
+///
+/// # Safety
+///
+/// `JavaVM` must not have `'static` lifetime, otherwise it will be possible to get
+/// `JNIEnv<'static>` and have local references that outlive the `AttachGuard`:
+/// <https://github.com/jni-rs/jni-rs/issues/558>.
+///
+/// Never call `JavaVM::destroy(&self)`.
 #[cfg(not(target_os = "android"))]
 #[inline(always)]
-pub fn jni_get_vm() -> &'static JavaVM {
-    JAVA_VM.get_or_init(|| {
-        let args = jni::InitArgsBuilder::new().build().unwrap();
-        JavaVM::new(args).unwrap()
-    })
+pub unsafe fn jni_get_vm() -> JavaVM {
+    let raw_vm = JAVA_VM
+        .get_or_init(|| {
+            let args = jni::InitArgsBuilder::new().build().unwrap();
+            JavaVM::new(args).unwrap()
+        })
+        .get_java_vm_pointer();
+    jni::JavaVM::from_raw(raw_vm.cast()).unwrap()
 }
 
 /// Gets the `JavaVM` from current Android context.
+///
+/// # Safety
+///
+/// `JavaVM` must not have `'static` lifetime, otherwise it will be possible to get
+/// `JNIEnv<'static>` and have local references that outlive the `AttachGuard`:
+/// <https://github.com/jni-rs/jni-rs/issues/558>.
+///
+/// Never call `JavaVM::destroy(&self)`.
 #[cfg(target_os = "android")]
 #[inline(always)]
-pub fn jni_get_vm() -> &'static JavaVM {
-    JAVA_VM.get_or_init(|| {
-        let ctx = ndk_context::android_context();
-        // Safety: as documented in `ndk-context` to obtain the `jni::JavaVM`
-        unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.unwrap()
-    })
+pub unsafe fn jni_get_vm() -> JavaVM {
+    let raw_vm = JAVA_VM
+        .get_or_init(|| {
+            let ctx = ndk_context::android_context();
+            // Safety: as documented in `ndk-context` to obtain the `jni::JavaVM`
+            unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.unwrap()
+        })
+        .get_java_vm_pointer();
+    jni::JavaVM::from_raw(raw_vm.cast()).unwrap()
 }
 
 /// It calls `JNIEnv::exception_clear()` which is needed for handling Java exceptions,
@@ -143,37 +186,51 @@ fn jni_clear_ex_inner(err: Error, print_err: bool, store_ex: bool) -> Error {
     let thread_id = std::thread::current().id();
 
     if let Error::JavaException = err {
-        let env = &mut jni_attach_vm().unwrap();
-        if env.exception_check().unwrap_or(true) {
-            let ex = env.exception_occurred(); // returns Result<JThrowable<'local>>
+        let _ = jni_with_env(|env| {
+            if env.exception_check().unwrap_or(true) {
+                if !print_err && !store_ex {
+                    env.exception_clear().unwrap();
+                    return Ok(());
+                }
 
-            #[cfg(not(target_os = "android"))]
-            if print_err {
-                // This (and Java `printStackTrace()` with `PrintWriter`) may not work on Android.
-                // Don't do it before `exception_check()` or `exception_occurred()`!
-                let _ = env.exception_describe();
-            }
-            env.exception_clear().unwrap(); // panic if unable to clear
+                let ex = env.exception_occurred(); // returns Result<JThrowable<'local>>
 
-            if let Ok(ex) = ex.global_ref(env) {
+                #[cfg(not(target_os = "android"))]
                 if print_err {
-                    // This is required for Android because `env.exception_describe()` may not work.
+                    // This (and Java `printStackTrace()` with `PrintWriter`) may not work on Android.
+                    // Note: Don't do this before `exception_check()` or `exception_occurred()`!
+                    let _ = env.exception_describe();
+                }
+
+                // panics if unable to clear
+                env.exception_clear().unwrap();
+
+                if print_err {
                     #[cfg(target_os = "android")]
-                    if let Ok(ex_msg) = ex.get_throwable_msg(env) {
-                        let ex_type = class_name_to_java(&ex.get_class_name(env).unwrap());
-                        warn!("Exception in thread \"{thread_id:?}\" {ex_type}: {ex_msg}");
-                    } else {
-                        warn!("Unknown Java exception in thread \"{thread_id:?}\"");
+                    if let Ok(ex) = ex.as_ref() {
+                        // This is required for Android because `env.exception_describe()` may not work.
+                        if let Ok(ex_msg) = ex.get_throwable_msg(env) {
+                            let ex_type = class_name_to_java(&ex.get_class_name(env).unwrap());
+                            warn!("Exception in thread \"{thread_id:?}\" {ex_type}: {ex_msg}");
+                        } else {
+                            warn!("Unknown Java exception in thread \"{thread_id:?}\"");
+                        }
                     }
-                    // print for all platforms
+                    // prints for all platforms
                     print_rust_stack();
                 }
+
                 if store_ex {
-                    // prepare for `jni_last_cleared_ex()`
-                    LAST_CLEARED_EX.set(Some(ex));
+                    if let Ok(ex) = ex.global_ref(env) {
+                        // prepare for `jni_last_cleared_ex()`
+                        LAST_CLEARED_EX.set(Some(ex));
+                    }
+                } else {
+                    let _ = ex.auto_local(env);
                 }
             }
-        }
+            Ok(())
+        });
     } else if print_err {
         warn!("JNI Error in thread \"{thread_id:?}\": {err:?}");
         print_rust_stack();
@@ -205,7 +262,12 @@ fn print_rust_stack() {
 /// Performance penalty of using `AutoLocal<'_>` can be more serious than using local frames.
 /// However, functions in this crate all return `AutoLocal`; to take advantage of a fixed-size
 /// local reference frame while looping for a known amount of times, call `AutoLocal::forget()`.
-/// Reference: <https://github.com/jni-rs/jni-rs/issues/392#issuecomment-1343685851>.
+/// Note that `JNIEnv::with_local_frame` is actually unsound, but it is safe if the inner closure
+/// does not use any `AttachGuard` or `JNIEnv` obtained outside.
+///
+/// Reference:
+/// - <https://github.com/jni-rs/jni-rs/issues/392#issuecomment-1343685851>
+/// - <https://github.com/jni-rs/jni-rs/issues/548>
 ///
 /// Turning a null reference into `AutoLocal<'_>` is acceptable, because the JNI `DeleteLocalRef`
 /// doesn't require the reference to be non-null, while it's required for some other functions.
@@ -225,8 +287,8 @@ where
 
     #[inline(always)]
     fn global_ref(self, env: &JNIEnv<'a>) -> Result<GlobalRef, Error> {
-        let local = self.auto_local(env)?;
-        env.new_global_ref(local)
+        let local = self.auto_local(env);
+        local.globalize(env)
     }
 }
 
@@ -243,6 +305,11 @@ pub trait AutoLocalGlobalize<'a> {
 impl<'a> AutoLocalGlobalize<'a> for Result<AutoLocal<'a>, Error> {
     #[inline(always)]
     fn globalize(self, env: &JNIEnv<'a>) -> Result<GlobalRef, Error> {
-        self.and_then(|o| env.new_global_ref(&o))
+        let local = self?;
+        let global = env.new_global_ref(&local)?;
+        if !local.is_null() {
+            global.null_check("new_global_ref")?;
+        }
+        Ok(global)
     }
 }

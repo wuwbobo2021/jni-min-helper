@@ -32,14 +32,14 @@ publish = false
 
 [dependencies]
 log = "0.4"
-jni-min-helper = "0.2.7"
+jni-min-helper = "0.3.0"
 android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.14"
 
 [lib]
 name = "android_simple_test"
 crate-type = ["cdylib"]
-path = "main.rs"
+path = "lib.rs"
 
 [package.metadata.android]
 package = "com.example.android_simple_test"
@@ -52,6 +52,8 @@ target_sdk_version = 30
 [[package.metadata.android.uses_permission]]
 name = "android.permission.ACCESS_NETWORK_STATE"
 ```
+
+`lib.rs`:
 
 ```rust
 use android_activity::{AndroidApp, MainEvent, PollEvent};
@@ -142,7 +144,7 @@ fn on_receive<'a>(
 Or use the `futures-lite` blocker of the asynchronous broadcast waiter:
 
 ```toml
-jni-min-helper = { version = "0.2", features = ["futures"] }
+jni-min-helper = { version = "0.3.0", features = ["futures"] }
 ```
 
 ```rust
@@ -183,9 +185,11 @@ fn background_loop() {
     log::info!("Built broadcast waiter.");
     loop {
         if let Some(intent) = waiter.wait_timeout(Duration::from_secs(1)) {
-            let env = &mut jni_attach_vm().unwrap();
-            let action = BroadcastReceiver::get_intent_action(intent, env).unwrap();
-            log::info!("Received an intent of action '{action}'.");
+            let _ = jni_with_env(|env| {
+                let action = BroadcastReceiver::get_intent_action(intent, env)?;
+                log::info!("Received an intent of action '{action}'.");
+                Ok(())
+            });
         }
     }
 }
@@ -253,109 +257,113 @@ fn chooser_dialog<'a>(
         sys::jsize,
     };
     use std::sync::{mpsc, Arc, Mutex};
-    let env = &mut jni_attach_vm()?;
-    let context = android_context();
 
-    // creates the dialog builder
-    let dialog_builder = env
-        .new_object(
-            "android/app/AlertDialog$Builder",
-            "(Landroid/content/Context;)V",
-            &[(&context).into()],
-        )
-        .auto_local(env)?;
+    jni_with_env(|env| {
+        let context = android_context();
 
-    let title = title.new_jobject(env)?;
-
-    // converts choice items to Java array
-    let choice_items = env
-        .new_object_array(choices.len() as jsize, "java/lang/String", JObject::null())
-        .auto_local(env)?;
-    let choice_items: &JObjectArray<'_> = choice_items.as_ref().into();
-    for (i, choice_name) in choices.iter().enumerate() {
-        let choice_name = choice_name.new_jobject(env)?;
-        env.set_object_array_element(choice_items, i as jsize, &choice_name)?;
-    }
-
-    let (tx1, rx) = mpsc::channel();
-    let tx2 = tx1.clone();
-
-    // creates OnClickListener
-    let on_click_listener = JniProxy::build(
-        None,
-        ["android/content/DialogInterface$OnClickListener"],
-        move |env, method, args| {
-            if method.get_method_name(env)? == "onClick" {
-                let _ = tx1.send(Some(args[1].get_int(env)?));
-            }
-            JniProxy::void(env)
-        },
-    )?;
-
-    // creates OnDismissListener
-    let on_dismiss_listener = JniProxy::build(
-        None,
-        ["android/content/DialogInterface$OnDismissListener"],
-        move |env, method, _| {
-            if method.get_method_name(env)? == "onDismiss" {
-                let _ = tx2.send(None);
-            }
-            JniProxy::void(env)
-        },
-    )?;
-
-    // configure the dialog builder
-    env.call_method(
-        &dialog_builder,
-        "setItems",
-        "([Ljava/lang/CharSequence;Landroid/content/DialogInterface$OnClickListener;)Landroid/app/AlertDialog$Builder;",
-        &[(&choice_items).into(), (&on_click_listener).into()]
-    ).clear_ex()?;
-
-    env.call_method(
-        &dialog_builder,
-        "setOnDismissListener",
-        "(Landroid/content/DialogInterface$OnDismissListener;)Landroid/app/AlertDialog$Builder;",
-        &[(&on_dismiss_listener).into()],
-    )
-    .clear_ex()?;
-
-    env.call_method(
-        &dialog_builder,
-        "setTitle",
-        "(Ljava/lang/CharSequence;)Landroid/app/AlertDialog$Builder;",
-        &[(&title).into()],
-    )
-    .clear_ex()?;
-
-    // creating and showing the dialog must be done in the Java main thread
-    let dialog_builder = Ok(dialog_builder).globalize(env)?;
-    let dialog_arc = Arc::new(Mutex::new(None));
-    let dialog_arc_2 = dialog_arc.clone(); // Note: a weak reference might be used
-    JniProxy::post_to_main_looper(move |env| {
-        let dialog = env
-            .call_method(
-                &dialog_builder,
-                "create",
-                "()Landroid/app/AlertDialog;",
-                &[],
+        // creates the dialog builder
+        let dialog_builder = env
+            .new_object(
+                "android/app/AlertDialog$Builder",
+                "(Landroid/content/Context;)V",
+                &[(&context).into()],
             )
-            .get_object(env)
-            .globalize(env)?;
-        env.call_method(&dialog, "show", "()V", &[]).clear_ex()?;
-        dialog_arc_2.lock().unwrap().replace(dialog);
-        Ok(())
-    })?;
+            .auto_local(env)?;
 
-    if let Some(r) = wait_recv(&rx, app) {
-        Ok(r.map(|i| choices[i as usize]))
-    } else {
-        let dialog = dialog_arc.lock().unwrap().take();
-        if let Some(dialog) = dialog {
-            env.call_method(&dialog, "dismiss", "()V", &[]).clear_ex()?;
+        let title = title.new_jobject(env)?;
+
+        // converts choice items to Java array
+        let choice_items = env
+            .new_object_array(choices.len() as jsize, "java/lang/String", JObject::null())
+            .auto_local(env)?;
+        let choice_items: &JObjectArray<'_> = choice_items.as_ref().into();
+        for (i, choice_name) in choices.iter().enumerate() {
+            let choice_name = choice_name.new_jobject(env)?;
+            env.set_object_array_element(choice_items, i as jsize, &choice_name)?;
         }
-        Ok(None)
-    }
+
+        let (tx1, rx) = mpsc::channel();
+        let tx2 = tx1.clone();
+
+        // creates OnClickListener
+        let on_click_listener = JniProxy::build(
+            env,
+            None,
+            ["android/content/DialogInterface$OnClickListener"],
+            move |env, method, args| {
+                if method.get_method_name(env)? == "onClick" {
+                    let _ = tx1.send(Some(args[1].get_int(env)?));
+                }
+                JniProxy::void(env)
+            },
+        )?;
+
+        // creates OnDismissListener
+        let on_dismiss_listener = JniProxy::build(
+            env,
+            None,
+            ["android/content/DialogInterface$OnDismissListener"],
+            move |env, method, _| {
+                if method.get_method_name(env)? == "onDismiss" {
+                    let _ = tx2.send(None);
+                }
+                JniProxy::void(env)
+            },
+        )?;
+
+        // configure the dialog builder
+        env.call_method(
+            &dialog_builder,
+            "setItems",
+            "([Ljava/lang/CharSequence;Landroid/content/DialogInterface$OnClickListener;)Landroid/app/AlertDialog$Builder;",
+            &[(&choice_items).into(), (&on_click_listener).into()]
+        ).clear_ex()?;
+
+        env.call_method(
+            &dialog_builder,
+            "setOnDismissListener",
+            "(Landroid/content/DialogInterface$OnDismissListener;)Landroid/app/AlertDialog$Builder;",
+            &[(&on_dismiss_listener).into()],
+        )
+        .clear_ex()?;
+
+        env.call_method(
+            &dialog_builder,
+            "setTitle",
+            "(Ljava/lang/CharSequence;)Landroid/app/AlertDialog$Builder;",
+            &[(&title).into()],
+        )
+        .clear_ex()?;
+
+        // creating and showing the dialog must be done in the Java main thread
+        let dialog_builder = Ok(dialog_builder).globalize(env)?;
+        let dialog_arc = Arc::new(Mutex::new(None));
+        let dialog_arc_2 = dialog_arc.clone(); // Note: a weak reference might be used
+        JniProxy::post_to_main_looper(move |env| {
+            let dialog = env
+                .call_method(
+                    &dialog_builder,
+                    "create",
+                    "()Landroid/app/AlertDialog;",
+                    &[],
+                )
+                .get_object(env)
+                .globalize(env)?;
+            env.call_method(&dialog, "show", "()V", &[]).clear_ex()?;
+            dialog_arc_2.lock().unwrap().replace(dialog);
+            Ok(())
+        })?;
+
+        if let Some(r) = wait_recv(&rx, app) {
+            Ok(r.map(|i| choices[i as usize]))
+        } else {
+            let dialog = dialog_arc.lock().unwrap().take();
+            if let Some(dialog) = dialog {
+                env.call_method(&dialog, "dismiss", "()V", &[]).clear_ex()?;
+            }
+            Ok(None)
+        }
+    })
 }
 
 fn wait_recv<T>(rx: &std::sync::mpsc::Receiver<T>, app: Option<&AndroidApp>) -> Option<T> {

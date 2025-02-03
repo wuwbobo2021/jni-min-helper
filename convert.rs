@@ -1,4 +1,4 @@
-use crate::{jni_attach_vm, jni_clear_ex, AutoLocal, JObjectAutoLocal};
+use crate::{jni_clear_ex, jni_with_env, AutoLocal, JObjectAutoLocal};
 use jni::{
     descriptors::Desc,
     errors::Error,
@@ -79,8 +79,6 @@ impl<'a> JValueGenGet<'a> for Result<JValueOwned<'a>, Error> {
 }
 
 /// Gets the value from the Java object; calls `jni_clear_ex()` for an error.
-///
-/// Functions defined here may return `Error::WrongJValueType`, which is probably misused.
 pub trait JObjectGet<'a> {
     /// Checks if the object reference is null.
     fn is_null(&self) -> bool;
@@ -93,12 +91,11 @@ pub trait JObjectGet<'a> {
     where
         Self: Sized;
 
-    /// Does `null_check()`, returns `Error::WrongJValueType` if it is not an instance
+    /// Does `null_check()`, returns `JniError::InvalidArguments` if it is not an instance
     /// of the given class.
     fn class_check<'b, 'e>(
         &self,
         class: impl Desc<'e, JClass<'b>>,
-        error_clue: &'static str,
         env: &mut JNIEnv<'e>,
     ) -> Result<&JObject<'a>, Error>;
 
@@ -106,7 +103,6 @@ pub trait JObjectGet<'a> {
     fn class_check_owned<'b, 'e>(
         self,
         class: impl Desc<'e, JClass<'b>>,
-        error_clue: &'static str,
         env: &mut JNIEnv<'e>,
     ) -> Result<Self, Error>
     where
@@ -116,14 +112,19 @@ pub trait JObjectGet<'a> {
     ///
     /// ```
     /// use jni_min_helper::*;
-    /// use jni::{objects::JObject, sys::jint, errors::Error};
-    ///
-    /// let env = &mut jni_attach_vm().unwrap();
-    /// let integer = (3 as jint).new_jobject(env).unwrap();
-    /// let boolean = true.new_jobject(env).unwrap();
-    /// assert!(integer.number_check(env).is_ok());
-    /// assert!(matches!(boolean.number_check(env), Err(Error::WrongJValueType(_, _))));
-    /// assert!(matches!(JObject::null().number_check(env), Err(Error::NullPtr(_))));
+    /// use jni::{objects::JObject, sys::jint, errors::{Error, JniError}};
+    /// jni_with_env(|env| {
+    ///     let integer = (3 as jint).new_jobject(env)?;
+    ///     let boolean = true.new_jobject(env)?;
+    ///     assert!(integer.number_check(env).is_ok());
+    ///     assert!(matches!(
+    ///         boolean.number_check(env),
+    ///         Err(Error::JniCall(JniError::InvalidArguments))
+    ///     ));
+    ///     assert!(matches!(JObject::null().number_check(env), Err(Error::NullPtr(_))));
+    ///     Ok(())
+    /// })
+    /// .unwrap();
     /// ```
     fn number_check<'e>(&self, env: &mut JNIEnv<'e>) -> Result<&JObject<'a>, Error>;
 
@@ -159,22 +160,23 @@ pub trait JObjectGet<'a> {
     ///
     /// ```
     /// use jni_min_helper::*;
-    /// let env = &mut jni_attach_vm().unwrap();
+    /// jni_with_env(|env| {
+    ///     let s_tmp = 123.new_jobject(env)?.to_string(env)?;
+    ///     let s1 = s_tmp.new_jobject(env)?;
+    ///     let s2 = "123".new_jobject(env)?;
+    ///     assert!(s1.equals(&s2, env)?);
     ///
-    /// let s_tmp = 123.new_jobject(env).unwrap().to_string(env).unwrap();
-    /// let s1 = s_tmp.new_jobject(env).unwrap();
-    /// let s2 = "123".new_jobject(env).unwrap();
-    /// assert!(s1.equals(&s2, env).unwrap());
-    ///
-    /// let s1_1 = "abc".new_jobject(env).unwrap();
-    /// let s1_2 = env.new_local_ref(&s1_1).auto_local(env).unwrap();
-    /// let s_tmp = "ABC".new_jobject(env).unwrap();
-    /// let s2 = env.call_method(&s_tmp, "toLowerCase", "()Ljava/lang/String;", &[])
-    ///     .get_object(env)
-    ///     .unwrap();
-    /// assert!(s1_1.is_same_object(&s1_2, env));
-    /// assert!(!s1_1.is_same_object(&s2, env));
-    /// assert!(s1_1.equals(&s2, env).unwrap());
+    ///     let s1_1 = "abc".new_jobject(env)?;
+    ///     let s1_2 = env.new_local_ref(&s1_1).auto_local(env)?;
+    ///     let s_tmp = "ABC".new_jobject(env)?;
+    ///     let s2 = env.call_method(&s_tmp, "toLowerCase", "()Ljava/lang/String;", &[])
+    ///         .get_object(env)?;
+    ///     assert!(s1_1.is_same_object(&s1_2, env));
+    ///     assert!(!s1_1.is_same_object(&s2, env));
+    ///     assert!(s1_1.equals(&s2, env)?);
+    ///     Ok(())
+    /// })
+    /// .unwrap();
     /// ```
     fn equals<'b, 'e>(
         &self,
@@ -189,9 +191,12 @@ pub trait JObjectGet<'a> {
     ///
     /// ```
     /// use jni_min_helper::*;
-    /// let env = &mut jni_attach_vm().unwrap();
-    /// let boolean = true.new_jobject(env).unwrap();
-    /// assert_eq!(boolean.get_class_name(env).unwrap(), "java/lang/Boolean");
+    /// jni_with_env(|env| {
+    ///     let boolean = true.new_jobject(env)?;
+    ///     assert_eq!(boolean.get_class_name(env)?, "java/lang/Boolean");
+    ///     Ok(())
+    /// })
+    /// .unwrap();
     /// ```
     fn get_class_name(&self, env: &mut JNIEnv<'_>) -> Result<String, Error>;
 
@@ -242,14 +247,13 @@ where
     fn class_check<'b, 'e>(
         &self,
         class: impl Desc<'e, JClass<'b>>,
-        error_clue: &'static str,
         env: &mut JNIEnv<'e>,
     ) -> Result<&JObject<'a>, Error> {
-        self.null_check(error_clue)?;
+        self.null_check("class_check")?;
         if env.is_instance_of(self, class)? {
             Ok(self.as_ref())
         } else {
-            Err(Error::WrongJValueType("Object", error_clue))
+            Err(Error::JniCall(jni::errors::JniError::InvalidArguments))
         }
     }
 
@@ -257,24 +261,23 @@ where
     fn class_check_owned<'b, 'e>(
         self,
         class: impl Desc<'e, JClass<'b>>,
-        error_clue: &'static str,
         env: &mut JNIEnv<'e>,
     ) -> Result<Self, Error>
     where
         Self: Sized,
     {
-        self.class_check(class, error_clue, env)?;
+        self.class_check(class, env)?;
         Ok(self)
     }
 
     #[inline(always)]
     fn number_check<'e>(&self, env: &mut JNIEnv<'e>) -> Result<&JObject<'a>, Error> {
-        self.class_check(perf()?.abstract_number.as_class(), "number_check", env)
+        self.class_check(perf()?.abstract_number.as_class(), env)
     }
 
     #[inline(always)]
     fn as_class_checked(&self, env: &mut JNIEnv<'_>) -> Result<&JClass<'a>, Error> {
-        self.class_check(perf()?.java_class.as_class(), "as_class_checked", env)
+        self.class_check(perf()?.java_class.as_class(), env)
             .map(|o| o.as_class())
     }
 
@@ -286,7 +289,7 @@ where
     #[inline(always)]
     fn get_boolean(&self, env: &mut JNIEnv<'_>) -> Result<bool, Error> {
         let perf = perf()?;
-        self.class_check(perf.wrapper_boolean.as_class(), "get_boolean", env)?;
+        self.class_check(perf.wrapper_boolean.as_class(), env)?;
         unsafe {
             env.call_method_unchecked(self, perf.get_boolean, RetPrim(Primitive::Boolean), &[])
         }
@@ -295,7 +298,7 @@ where
     #[inline(always)]
     fn get_char(&self, env: &mut JNIEnv<'_>) -> Result<jchar, Error> {
         let perf = perf()?;
-        self.class_check(perf.wrapper_character.as_class(), "get_char", env)?;
+        self.class_check(perf.wrapper_character.as_class(), env)?;
         unsafe {
             env.call_method_unchecked(self, perf.get_character, RetPrim(Primitive::Char), &[])
         }
@@ -402,7 +405,7 @@ where
     #[inline]
     fn get_method_name(&self, env: &mut JNIEnv<'_>) -> Result<String, Error> {
         let perf = perf()?;
-        self.class_check(perf.java_method.as_class(), "get_method_name", env)?;
+        self.class_check(perf.java_method.as_class(), env)?;
         unsafe { env.call_method_unchecked(self, perf.get_method_name, RetObj, &[]) }
             .get_object(env)?
             .get_string(env)
@@ -411,7 +414,7 @@ where
     #[inline]
     fn get_throwable_msg(&self, env: &mut JNIEnv<'_>) -> Result<String, Error> {
         let perf = perf()?;
-        self.class_check(perf.java_throwable.as_class(), "get_throwable_msg", env)?;
+        self.class_check(perf.java_throwable.as_class(), env)?;
         unsafe { env.call_method_unchecked(self, perf.get_throwable_msg, RetObj, &[]) }
             .get_object(env)?
             .get_string(env)
@@ -419,13 +422,10 @@ where
 
     #[inline(always)]
     fn get_string(&self, env: &mut JNIEnv<'_>) -> Result<String, Error> {
-        self.class_check(perf()?.java_string.as_class(), "get_string", env)?;
+        self.class_check(perf()?.java_string.as_class(), env)?;
         unsafe { env.get_string_unchecked(self.as_ref().into()) }
-            .map_err(jni_clear_ex)?
-            .to_str()
-            .map(|s| s.to_string())
-            // the last is unlikely to happen
-            .map_err(|_| Error::WrongJValueType("String", "UTF-8 convertion failure"))
+            .map_err(jni_clear_ex)
+            .map(|s| s.into())
     }
 
     fn sealer(_: private::Internal) {}
@@ -435,19 +435,22 @@ where
 ///
 /// ```
 /// use jni_min_helper::*;
-/// let env = &mut jni_attach_vm().unwrap();
+/// jni_with_env(|env| {
+///     assert_eq!("a×b 👆~\r".new_jobject(env)?.get_string(env)?, "a×b 👆~\r");
+///     assert_eq!(false.new_jobject(env)?.get_boolean(env)?, false);
+///     assert_eq!(true.new_jobject(env)?.get_boolean(env)?, true);
+///     assert_eq!(0x000a_u16.new_jobject(env)?.get_char(env)?, 0x000a_u16);
 ///
-/// assert_eq!("a×b".new_jobject(env).unwrap().get_string(env).unwrap(), "a×b");
-/// assert_eq!(false.new_jobject(env).unwrap().get_boolean(env).unwrap(), false);
-/// assert_eq!(true.new_jobject(env).unwrap().get_boolean(env).unwrap(), true);
-/// assert_eq!(0x000a_u16.new_jobject(env).unwrap().get_char(env).unwrap(), 0x000a_u16);
+///     assert_eq!(0x39_i8.new_jobject(env)?.get_byte(env)?, 0x39_i8);
+///     assert_eq!(i16::MAX.new_jobject(env)?.get_short(env)?, i16::MAX);
+///     assert_eq!(i32::MAX.new_jobject(env)?.get_int(env)?, i32::MAX);
+///     assert_eq!(i64::MAX.new_jobject(env)?.get_long(env)?, i64::MAX);
+///     assert_eq!(3.14_f32.new_jobject(env)?.get_float(env)?, 3.14_f32);
+///     assert_eq!(3.14.new_jobject(env)?.get_double(env)?, 3.14);
 ///
-/// assert_eq!(0x39_i8.new_jobject(env).unwrap().get_byte(env).unwrap(), 0x39_i8);
-/// assert_eq!(i16::MAX.new_jobject(env).unwrap().get_short(env).unwrap(), i16::MAX);
-/// assert_eq!(i32::MAX.new_jobject(env).unwrap().get_int(env).unwrap(), i32::MAX);
-/// assert_eq!(i64::MAX.new_jobject(env).unwrap().get_long(env).unwrap(), i64::MAX);
-/// assert_eq!(3.14_f32.new_jobject(env).unwrap().get_float(env).unwrap(), 3.14_f32);
-/// assert_eq!(3.14.new_jobject(env).unwrap().get_double(env).unwrap(), 3.14);
+///     Ok(())
+/// })
+/// .unwrap();
 /// ```
 pub trait JObjectNew<'a> {
     fn new_jobject(&self, env: &mut JNIEnv<'a>) -> Result<AutoLocal<'a>, Error>;
@@ -624,94 +627,95 @@ fn perf() -> Result<&'static PerfStore, Error> {
 }
 
 fn perf_store_init(perf: &OnceLock<PerfStore>) -> Result<(), Error> {
-    let env = &mut jni_attach_vm()?;
-    let wrapper_boolean = env.find_class("java/lang/Boolean").global_ref(env)?;
-    let wrapper_character = env.find_class("java/lang/Character").global_ref(env)?;
-    let abstract_number = env.find_class("java/lang/Number").global_ref(env)?;
+    jni_with_env(|env| {
+        let wrapper_boolean = env.find_class("java/lang/Boolean").global_ref(env)?;
+        let wrapper_character = env.find_class("java/lang/Character").global_ref(env)?;
+        let abstract_number = env.find_class("java/lang/Number").global_ref(env)?;
 
-    let _ = perf.set(PerfStore {
-        wrapper_boolean: wrapper_boolean.clone(),
-        wrapper_character: wrapper_character.clone(),
-        abstract_number: abstract_number.clone(),
+        let _ = perf.set(PerfStore {
+            wrapper_boolean: wrapper_boolean.clone(),
+            wrapper_character: wrapper_character.clone(),
+            abstract_number: abstract_number.clone(),
 
-        wrapper_byte: env.find_class("java/lang/Byte").global_ref(env)?,
-        wrapper_short: env.find_class("java/lang/Short").global_ref(env)?,
-        wrapper_integer: env.find_class("java/lang/Integer").global_ref(env)?,
-        wrapper_long: env.find_class("java/lang/Long").global_ref(env)?,
-        wrapper_float: env.find_class("java/lang/Float").global_ref(env)?,
-        wrapper_double: env.find_class("java/lang/Double").global_ref(env)?,
+            wrapper_byte: env.find_class("java/lang/Byte").global_ref(env)?,
+            wrapper_short: env.find_class("java/lang/Short").global_ref(env)?,
+            wrapper_integer: env.find_class("java/lang/Integer").global_ref(env)?,
+            wrapper_long: env.find_class("java/lang/Long").global_ref(env)?,
+            wrapper_float: env.find_class("java/lang/Float").global_ref(env)?,
+            wrapper_double: env.find_class("java/lang/Double").global_ref(env)?,
 
-        java_string: env.find_class("java/lang/String").global_ref(env)?,
-        java_class: env.find_class("java/lang/Class").global_ref(env)?,
-        java_method: env.find_class("java/lang/reflect/Method").global_ref(env)?,
-        java_throwable: env.find_class("java/lang/Throwable").global_ref(env)?,
+            java_string: env.find_class("java/lang/String").global_ref(env)?,
+            java_class: env.find_class("java/lang/Class").global_ref(env)?,
+            java_method: env.find_class("java/lang/reflect/Method").global_ref(env)?,
+            java_throwable: env.find_class("java/lang/Throwable").global_ref(env)?,
 
-        get_boolean: env
-            .get_method_id(&wrapper_boolean, "booleanValue", "()Z")
-            .map_err(jni_clear_ex)?,
-        get_character: env
-            .get_method_id(&wrapper_character, "charValue", "()C")
-            .map_err(jni_clear_ex)?,
+            get_boolean: env
+                .get_method_id(&wrapper_boolean, "booleanValue", "()Z")
+                .map_err(jni_clear_ex)?,
+            get_character: env
+                .get_method_id(&wrapper_character, "charValue", "()C")
+                .map_err(jni_clear_ex)?,
 
-        get_byte: env
-            .get_method_id(&abstract_number, "byteValue", "()B")
-            .map_err(jni_clear_ex)?,
-        get_short: env
-            .get_method_id(&abstract_number, "shortValue", "()S")
-            .map_err(jni_clear_ex)?,
-        get_integer: env
-            .get_method_id(&abstract_number, "intValue", "()I")
-            .map_err(jni_clear_ex)?,
-        get_long: env
-            .get_method_id(&abstract_number, "longValue", "()J")
-            .map_err(jni_clear_ex)?,
-        get_float: env
-            .get_method_id(&abstract_number, "floatValue", "()F")
-            .map_err(jni_clear_ex)?,
-        get_double: env
-            .get_method_id(&abstract_number, "doubleValue", "()D")
-            .map_err(jni_clear_ex)?,
+            get_byte: env
+                .get_method_id(&abstract_number, "byteValue", "()B")
+                .map_err(jni_clear_ex)?,
+            get_short: env
+                .get_method_id(&abstract_number, "shortValue", "()S")
+                .map_err(jni_clear_ex)?,
+            get_integer: env
+                .get_method_id(&abstract_number, "intValue", "()I")
+                .map_err(jni_clear_ex)?,
+            get_long: env
+                .get_method_id(&abstract_number, "longValue", "()J")
+                .map_err(jni_clear_ex)?,
+            get_float: env
+                .get_method_id(&abstract_number, "floatValue", "()F")
+                .map_err(jni_clear_ex)?,
+            get_double: env
+                .get_method_id(&abstract_number, "doubleValue", "()D")
+                .map_err(jni_clear_ex)?,
 
-        value_of_boolean: env
-            .get_static_method_id("java/lang/Boolean", "valueOf", "(Z)Ljava/lang/Boolean;")
-            .map_err(jni_clear_ex)?,
-        value_of_char: env
-            .get_static_method_id("java/lang/Character", "valueOf", "(C)Ljava/lang/Character;")
-            .map_err(jni_clear_ex)?,
-        value_of_byte: env
-            .get_static_method_id("java/lang/Byte", "valueOf", "(B)Ljava/lang/Byte;")
-            .map_err(jni_clear_ex)?,
-        value_of_short: env
-            .get_static_method_id("java/lang/Short", "valueOf", "(S)Ljava/lang/Short;")
-            .map_err(jni_clear_ex)?,
-        value_of_int: env
-            .get_static_method_id("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
-            .map_err(jni_clear_ex)?,
-        value_of_long: env
-            .get_static_method_id("java/lang/Long", "valueOf", "(J)Ljava/lang/Long;")
-            .map_err(jni_clear_ex)?,
-        value_of_float: env
-            .get_static_method_id("java/lang/Float", "valueOf", "(F)Ljava/lang/Float;")
-            .map_err(jni_clear_ex)?,
-        value_of_double: env
-            .get_static_method_id("java/lang/Double", "valueOf", "(D)Ljava/lang/Double;")
-            .map_err(jni_clear_ex)?,
+            value_of_boolean: env
+                .get_static_method_id("java/lang/Boolean", "valueOf", "(Z)Ljava/lang/Boolean;")
+                .map_err(jni_clear_ex)?,
+            value_of_char: env
+                .get_static_method_id("java/lang/Character", "valueOf", "(C)Ljava/lang/Character;")
+                .map_err(jni_clear_ex)?,
+            value_of_byte: env
+                .get_static_method_id("java/lang/Byte", "valueOf", "(B)Ljava/lang/Byte;")
+                .map_err(jni_clear_ex)?,
+            value_of_short: env
+                .get_static_method_id("java/lang/Short", "valueOf", "(S)Ljava/lang/Short;")
+                .map_err(jni_clear_ex)?,
+            value_of_int: env
+                .get_static_method_id("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
+                .map_err(jni_clear_ex)?,
+            value_of_long: env
+                .get_static_method_id("java/lang/Long", "valueOf", "(J)Ljava/lang/Long;")
+                .map_err(jni_clear_ex)?,
+            value_of_float: env
+                .get_static_method_id("java/lang/Float", "valueOf", "(F)Ljava/lang/Float;")
+                .map_err(jni_clear_ex)?,
+            value_of_double: env
+                .get_static_method_id("java/lang/Double", "valueOf", "(D)Ljava/lang/Double;")
+                .map_err(jni_clear_ex)?,
 
-        get_class_name: env
-            .get_method_id("java/lang/Class", "getName", "()Ljava/lang/String;")
-            .map_err(jni_clear_ex)?,
-        get_method_name: env
-            .get_method_id(
-                "java/lang/reflect/Method",
-                "getName",
-                "()Ljava/lang/String;",
-            )
-            .map_err(jni_clear_ex)?,
-        get_throwable_msg: env
-            .get_method_id("java/lang/Throwable", "getMessage", "()Ljava/lang/String;")
-            .map_err(jni_clear_ex)?,
-    });
-    Ok(())
+            get_class_name: env
+                .get_method_id("java/lang/Class", "getName", "()Ljava/lang/String;")
+                .map_err(jni_clear_ex)?,
+            get_method_name: env
+                .get_method_id(
+                    "java/lang/reflect/Method",
+                    "getName",
+                    "()Ljava/lang/String;",
+                )
+                .map_err(jni_clear_ex)?,
+            get_throwable_msg: env
+                .get_method_id("java/lang/Throwable", "getMessage", "()Ljava/lang/String;")
+                .map_err(jni_clear_ex)?,
+        });
+        Ok(())
+    })
 }
 
 #[inline(always)]

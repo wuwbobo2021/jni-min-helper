@@ -1,4 +1,4 @@
-use crate::{convert::*, jni_attach_vm, jni_clear_ex, loader::*, proxy::*, JObjectAutoLocal};
+use crate::{convert::*, jni_clear_ex, jni_with_env, loader::*, proxy::*, JObjectAutoLocal};
 
 use jni::{
     errors::Error,
@@ -34,11 +34,10 @@ impl std::ops::Deref for BroadcastReceiver {
 impl Drop for BroadcastReceiver {
     fn drop(&mut self) {
         if !self.forget {
-            if let Ok(env) = &mut jni_attach_vm() {
-                let _ = self
-                    .unregister_inner(env)
-                    .map_err(crate::jni_clear_ex_ignore);
-            }
+            let _ = jni_with_env(|env| {
+                self.unregister_inner(env)
+                    .map_err(crate::jni_clear_ex_ignore)
+            });
         }
     }
 }
@@ -55,75 +54,78 @@ impl BroadcastReceiver {
             + Sync
             + 'static,
     ) -> Result<Self, Error> {
-        let env = &mut jni_attach_vm()?;
+        jni_with_env(|env| {
+            let loader = get_helper_class_loader()?;
+            let cls_rec = loader.load_class("rust/jniminhelper/BroadcastRec")?;
+            let cls_rec_hdl =
+                loader.load_class("rust/jniminhelper/BroadcastRec$BroadcastRecHdl")?;
 
-        let loader = get_helper_class_loader()?;
-        let cls_rec = loader.load_class("rust/jniminhelper/BroadcastRec")?;
-        let cls_rec_hdl = loader.load_class("rust/jniminhelper/BroadcastRec$BroadcastRecHdl")?;
+            let proxy = JniProxy::build(
+                env,
+                Some(loader),
+                [cls_rec_hdl.as_class()],
+                move |env, method, args| {
+                    if method.get_method_name(env)? == "onReceive" && args.len() == 2 {
+                        // usually, `jni_clear_ex` will be called inside the closure on exception;
+                        // if not, then this will prevent the exception from throwing.
+                        let _ = handler(env, args[0], args[1]).map_err(crate::jni_clear_ex_silent);
+                        let _ = env.exception_clear();
+                    }
+                    JniProxy::void(env)
+                },
+            )?;
 
-        let proxy = JniProxy::build(
-            Some(loader),
-            [cls_rec_hdl.as_class()],
-            move |env, method, args| {
-                if method.get_method_name(env)? == "onReceive" && args.len() == 2 {
-                    // usually, `jni_clear_ex` will be called inside the closure on exception;
-                    // if not, then this will prevent the exception from throwing.
-                    let _ = handler(env, args[0], args[1]).map_err(crate::jni_clear_ex_silent);
-                    let _ = env.exception_clear();
-                }
-                JniProxy::void(env)
-            },
-        )?;
+            let receiver = env
+                .new_object(
+                    cls_rec.as_class(),
+                    "(Lrust/jniminhelper/BroadcastRec$BroadcastRecHdl;)V",
+                    &[(&proxy).into()],
+                )
+                .global_ref(env)?;
 
-        let receiver = env
-            .new_object(
-                cls_rec.as_class(),
-                "(Lrust/jniminhelper/BroadcastRec$BroadcastRecHdl;)V",
-                &[(&proxy).into()],
-            )
-            .global_ref(env)?;
-
-        Ok(Self {
-            receiver,
-            proxy: Some(proxy),
-            forget: false,
+            Ok(Self {
+                receiver,
+                proxy: Some(proxy),
+                forget: false,
+            })
         })
     }
 
     /// Registers the receiver to the current Android context.
     pub fn register(&self, intent_filter: &JObject<'_>) -> Result<(), Error> {
-        let env = &mut jni_attach_vm()?;
-        let context = android_context();
-        env.call_method(
-            context,
-            "registerReceiver",
-            "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;",
-            &[(&self.receiver).into(), (&intent_filter).into()]
-        )
-        .clear_ex()
+        jni_with_env(|env| {
+            let context = android_context();
+            env.call_method(
+                context,
+                "registerReceiver",
+                "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;",
+                &[(&self.receiver).into(), (&intent_filter).into()]
+            )
+            .clear_ex()
+        })
     }
 
     /// Registers the receiver to the current Android context, with an intent filter
     /// that matches a single `action` with no data.
     pub fn register_for_action(&self, action: &str) -> Result<(), Error> {
-        let env = &mut jni_attach_vm()?;
-        let action = action.new_jobject(env)?;
-        let filter = env
-            .new_object(
-                "android/content/IntentFilter",
-                "(Ljava/lang/String;)V",
-                &[(&action).into()],
-            )
-            .auto_local(env)?;
-        self.register(&filter)
+        jni_with_env(|env| {
+            let action = action.new_jobject(env)?;
+            let filter = env
+                .new_object(
+                    "android/content/IntentFilter",
+                    "(Ljava/lang/String;)V",
+                    &[(&action).into()],
+                )
+                .auto_local(env)?;
+            self.register(&filter)
+        })
     }
 
     /// Unregister the previously registered broadcast receiver. All filters that have been
     /// registered for this receiver will be removed.
     #[inline(always)]
     pub fn unregister(&self) -> Result<(), Error> {
-        let env = &mut jni_attach_vm()?;
-        self.unregister_inner(env).map_err(jni_clear_ex)
+        jni_with_env(|env| self.unregister_inner(env).map_err(jni_clear_ex))
     }
 
     fn unregister_inner(&self, env: &mut JNIEnv<'_>) -> Result<(), Error> {
@@ -146,7 +148,6 @@ impl BroadcastReceiver {
         use std::sync::OnceLock;
         static STORE: OnceLock<(GlobalRef, JMethodID)> = OnceLock::new();
         if STORE.get().is_none() {
-            let env = &mut jni_attach_vm()?;
             let class_intent = env.find_class("android/content/Intent").global_ref(env)?;
             let method_get_action = env
                 .get_method_id(&class_intent, "getAction", "()Ljava/lang/String;")
@@ -156,7 +157,7 @@ impl BroadcastReceiver {
         let store = STORE.get().unwrap();
         let (class, method) = (store.0.as_class(), &store.1);
 
-        intent.class_check(class, "get_intent_action", env)?;
+        intent.class_check(class, env)?;
         unsafe { env.call_method_unchecked(intent, method, ReturnType::Object, &[]) }
             .get_object(env)?
             .get_string(env)
