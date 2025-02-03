@@ -1,5 +1,15 @@
 # Changes
 
+## 0.3.0
+* Workaround for <https://github.com/jni-rs/jni-rs/issues/558>: removed function `jni_attach_vm`, use `jni_with_env` instead; `jni_get_vm` and `jni_set_vm` are marked with `unsafe`; added function `jni_attach_permanently()`.
+* Fixed a bug in `JObjectGet::get_string`: it did not support Unicode characters outside of the BMP (like emojis).
+* Functions in `JObjectGet` may return `Error::JniCall(JniError::InvalidArguments)` instead of `Error::WrongJValueType(_, _)`; the error clue string cannot be passed to `class_check` for now.
+* `JniProxy::build` now requires `&mut JNIEnv<'e>` as an argument, in order to use `interfaces` inside `jni_with_env` closure.
+* Added `JniProxy::current_proxy_id()` for debugging purposes; added `JNIProxy::post_to_main_looper` for Android.
+* Enhanced build script: it is now possible to use it as a template for other Android support crates to add jar dependencies for building the dex file.
+* Added method `append_dex` in Android `JniClassLoader`.
+* Some other fixes.
+
 ## 0.2.6
 * Added `no-proxy` cargo feature, it disables `JniProxy` and anything that depends on it (e.g. `BroadcastReceiver`), as well as the dex/class building process.
 

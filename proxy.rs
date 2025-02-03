@@ -203,8 +203,9 @@ impl JniProxy {
         }
 
         // creates the proxy object with a new invocation handler, register the Rust handler with its ID
-        let id: i64 = new_hdl_id();
         let cls_invoc_hdl: &JClass<'_> = get_invoc_hdl_class()?.into();
+        let mut handlers_locked = RUST_HANDLERS.lock().unwrap();
+        let id: i64 = new_hdl_id(&handlers_locked);
         let invoc_hdl = env
             .new_object(cls_invoc_hdl, "(J)V", &[id.into()])
             .auto_local(env)?;
@@ -220,7 +221,7 @@ impl JniProxy {
             )
             .get_object(env)
             .globalize(env)?;
-        RUST_HANDLERS.lock().unwrap().insert(id, Arc::new(handler));
+        handlers_locked.insert(id, Arc::new(handler));
         Ok(Self {
             rust_hdl_id: id,
             java_proxy: proxy,
@@ -234,7 +235,8 @@ impl JniProxy {
         Ok(JObject::null()).auto_local(env)
     }
 
-    /// Gets the invoked proxy ID inside the Rust handler; returns `None` elsewhere.
+    /// Gets the invoked proxy ID inside the Rust handler closure for debugging;
+    /// returns `None` elsewhere.
     pub fn current_proxy_id() -> Option<i64> {
         CURRENT_PROXY_ID.get()
     }
@@ -317,13 +319,12 @@ fn get_invoc_hdl_class() -> Result<&'static JObject<'static>, Error> {
 }
 
 // Note: this function depends on `clock_gettime()` on UNIX, including Android.
-fn new_hdl_id() -> i64 {
+fn new_hdl_id(handlers_locked: &HashMap<i64, Arc<RustHandler>>) -> i64 {
     static STARTUP_INSTANT: LazyLock<Instant> = LazyLock::new(Instant::now);
     loop {
         let nanos = STARTUP_INSTANT.elapsed().as_nanos();
         let num = (nanos % (i64::MAX as u128)) as i64;
-        let lock = RUST_HANDLERS.lock().unwrap();
-        if !lock.contains_key(&num) {
+        if !handlers_locked.contains_key(&num) {
             return num;
         }
     }
