@@ -649,70 +649,72 @@ fn perf_store_init(perf: &OnceLock<PerfStore>) -> Result<(), Error> {
             java_method: env.find_class("java/lang/reflect/Method").global_ref(env)?,
             java_throwable: env.find_class("java/lang/Throwable").global_ref(env)?,
 
-            get_boolean: env
-                .get_method_id(&wrapper_boolean, "booleanValue", "()Z")
-                .map_err(jni_clear_ex)?,
-            get_character: env
-                .get_method_id(&wrapper_character, "charValue", "()C")
-                .map_err(jni_clear_ex)?,
+            get_boolean: env.get_method_id(&wrapper_boolean, "booleanValue", "()Z")?,
+            get_character: env.get_method_id(&wrapper_character, "charValue", "()C")?,
 
-            get_byte: env
-                .get_method_id(&abstract_number, "byteValue", "()B")
-                .map_err(jni_clear_ex)?,
-            get_short: env
-                .get_method_id(&abstract_number, "shortValue", "()S")
-                .map_err(jni_clear_ex)?,
-            get_integer: env
-                .get_method_id(&abstract_number, "intValue", "()I")
-                .map_err(jni_clear_ex)?,
-            get_long: env
-                .get_method_id(&abstract_number, "longValue", "()J")
-                .map_err(jni_clear_ex)?,
-            get_float: env
-                .get_method_id(&abstract_number, "floatValue", "()F")
-                .map_err(jni_clear_ex)?,
-            get_double: env
-                .get_method_id(&abstract_number, "doubleValue", "()D")
-                .map_err(jni_clear_ex)?,
+            get_byte: env.get_method_id(&abstract_number, "byteValue", "()B")?,
+            get_short: env.get_method_id(&abstract_number, "shortValue", "()S")?,
+            get_integer: env.get_method_id(&abstract_number, "intValue", "()I")?,
+            get_long: env.get_method_id(&abstract_number, "longValue", "()J")?,
+            get_float: env.get_method_id(&abstract_number, "floatValue", "()F")?,
+            get_double: env.get_method_id(&abstract_number, "doubleValue", "()D")?,
 
-            value_of_boolean: env
-                .get_static_method_id("java/lang/Boolean", "valueOf", "(Z)Ljava/lang/Boolean;")
-                .map_err(jni_clear_ex)?,
-            value_of_char: env
-                .get_static_method_id("java/lang/Character", "valueOf", "(C)Ljava/lang/Character;")
-                .map_err(jni_clear_ex)?,
-            value_of_byte: env
-                .get_static_method_id("java/lang/Byte", "valueOf", "(B)Ljava/lang/Byte;")
-                .map_err(jni_clear_ex)?,
-            value_of_short: env
-                .get_static_method_id("java/lang/Short", "valueOf", "(S)Ljava/lang/Short;")
-                .map_err(jni_clear_ex)?,
-            value_of_int: env
-                .get_static_method_id("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
-                .map_err(jni_clear_ex)?,
-            value_of_long: env
-                .get_static_method_id("java/lang/Long", "valueOf", "(J)Ljava/lang/Long;")
-                .map_err(jni_clear_ex)?,
-            value_of_float: env
-                .get_static_method_id("java/lang/Float", "valueOf", "(F)Ljava/lang/Float;")
-                .map_err(jni_clear_ex)?,
-            value_of_double: env
-                .get_static_method_id("java/lang/Double", "valueOf", "(D)Ljava/lang/Double;")
-                .map_err(jni_clear_ex)?,
+            value_of_boolean: env.get_static_method_id(
+                "java/lang/Boolean",
+                "valueOf",
+                "(Z)Ljava/lang/Boolean;",
+            )?,
+            value_of_char: env.get_static_method_id(
+                "java/lang/Character",
+                "valueOf",
+                "(C)Ljava/lang/Character;",
+            )?,
+            value_of_byte: env.get_static_method_id(
+                "java/lang/Byte",
+                "valueOf",
+                "(B)Ljava/lang/Byte;",
+            )?,
+            value_of_short: env.get_static_method_id(
+                "java/lang/Short",
+                "valueOf",
+                "(S)Ljava/lang/Short;",
+            )?,
+            value_of_int: env.get_static_method_id(
+                "java/lang/Integer",
+                "valueOf",
+                "(I)Ljava/lang/Integer;",
+            )?,
+            value_of_long: env.get_static_method_id(
+                "java/lang/Long",
+                "valueOf",
+                "(J)Ljava/lang/Long;",
+            )?,
+            value_of_float: env.get_static_method_id(
+                "java/lang/Float",
+                "valueOf",
+                "(F)Ljava/lang/Float;",
+            )?,
+            value_of_double: env.get_static_method_id(
+                "java/lang/Double",
+                "valueOf",
+                "(D)Ljava/lang/Double;",
+            )?,
 
-            get_class_name: env
-                .get_method_id("java/lang/Class", "getName", "()Ljava/lang/String;")
-                .map_err(jni_clear_ex)?,
-            get_method_name: env
-                .get_method_id(
-                    "java/lang/reflect/Method",
-                    "getName",
-                    "()Ljava/lang/String;",
-                )
-                .map_err(jni_clear_ex)?,
-            get_throwable_msg: env
-                .get_method_id("java/lang/Throwable", "getMessage", "()Ljava/lang/String;")
-                .map_err(jni_clear_ex)?,
+            get_class_name: env.get_method_id(
+                "java/lang/Class",
+                "getName",
+                "()Ljava/lang/String;",
+            )?,
+            get_method_name: env.get_method_id(
+                "java/lang/reflect/Method",
+                "getName",
+                "()Ljava/lang/String;",
+            )?,
+            get_throwable_msg: env.get_method_id(
+                "java/lang/Throwable",
+                "getMessage",
+                "()Ljava/lang/String;",
+            )?,
         });
         Ok(())
     })

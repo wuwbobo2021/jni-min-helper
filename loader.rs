@@ -193,7 +193,7 @@ impl JniClassLoader {
                     hasher.write(dex_data);
                     hasher.finish()
                 };
-                let dex_name = format!("{:016x}.dex", dex_hash);
+                let dex_name = format!("{dex_hash:016x}.dex");
                 let dex_file_path = code_cache_path.join(dex_name);
                 std::fs::write(&dex_file_path, dex_data).unwrap(); // Note: this panics on failure
                 let dex_file_path = dex_file_path.to_string_lossy().new_jobject(env)?;
@@ -284,7 +284,7 @@ pub fn android_app_name() -> &'static str {
     APP_NAME.get_or_init(|| {
         android_app_package_name()
             .split('.')
-            .last()
+            .next_back()
             .unwrap()
             .to_string()
     })

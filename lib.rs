@@ -1,6 +1,9 @@
 //! Minimal helper for `jni-rs`, supporting dynamic proxies, Android dex
 //! embedding and broadcast receiver. Used for calling Java code from Rust.
 //!
+//! Please consider using [java-spaghetti](https://github.com/Dirbaio/java-spaghetti)
+//! when its `0.3.0` version becomes available.
+//!
 //! `jni` is re-exported here for the user to import `jni` functions, avoiding
 //! version inconsistency between `jni` and this crate.
 //!
@@ -56,20 +59,26 @@ thread_local! {
 }
 
 /// Workaround for <https://github.com/jni-rs/jni-rs/issues/558>.
-/// Calls `jni_get_vm()`, attaches the current thread to the JVM and executes the closure.
+/// Calls `jni_get_vm()`, attaches the current thread to the JVM and executes the closure;
+/// then clears the exception if the closure's result is `Err(Error::JavaException)`.
+///
+/// However, *use* `jni-min-helper` methods or `.map_err(jni_clear_ex)` before returning from the closure
+/// if there may be temporary structs created in the closure with `drop()` doing JNI operations not listed in
+/// <https://docs.oracle.com/javase/8/docs/technotes/guides/jni/spec/design.html#exception_handling>.
+///
 /// The thread may be dettached if it has not been attached previously.
 #[inline(always)]
 pub fn jni_with_env<R>(f: impl FnOnce(&mut JNIEnv) -> Result<R, Error>) -> Result<R, Error> {
     let vm = unsafe { jni_get_vm() };
     let mut guarded_env = vm.attach_current_thread()?;
-    f(&mut guarded_env)
+    f(&mut guarded_env).map_err(jni_clear_ex)
 }
 
 /// Calls `jni_get_vm()` and tries attaching the current thread to the JVM permanently,
 /// in order to make `jni_with_env` faster. Does nothing and returns false if the thread
 /// is currently attached (this behaviour is determined by `jni-rs`).
 ///
-/// Note: This blocks JVM exit; `AttachCurrentThreadAsDaemon` is probably unsafe.
+/// Note: This blocks JVM exit; `AttachCurrentThreadAsDaemon` is not used as it is unsafe.
 ///
 /// To avoid the fatal error "Native thread exiting without having called DetachCurrentThread", check
 /// <https://doc.rust-lang.org/stable/std/thread/struct.LocalKey.html#platform-specific-behavior>.

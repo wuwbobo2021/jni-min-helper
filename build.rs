@@ -1,18 +1,16 @@
-// Inspired by the build script of crate `i-slint-backend-android-activity`.
 // For the Android target, new source files and even .jar dependencies can be added easily:
 // add the jar in `class_paths` of `compile_java_source` and `jar_dependencies` of `build_dex_file`.
 // Note: Newer JDK versions (including JDK 21 and above) may not work with Android D8
 // if there are anonymous classes in the Java code, which produces files like `Cls$1.class`
-// (fixed in build tools 35.0.0 ?). Currently `jni-min-helper` doesn't use anonymous classes.
+// (fixed in build tools 35.0.0). Currently `jni-min-helper` doesn't use anonymous classes.
 
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{env, fs, path::PathBuf};
+
+use android_build::{Dexer, JavaBuild};
 
 fn main() {
-    if env::var("CARGO_FEATURE_NO_PROXY").is_ok() {
+    // Checks if the "proxy" feature is enabled (see `Cargo.toml`)
+    if env::var("CARGO_FEATURE_PROXY").is_err() {
         return;
     }
 
@@ -28,8 +26,11 @@ fn main() {
     }
 
     if target_os == "android" {
-        let sources = collect_files_with_ext(&src_dir, "java").unwrap();
-        let android_jar = get_android_jar_path();
+        let sources = [
+            src_dir.join("BroadcastRec.java"),
+            src_dir.join("InvocHdl.java"),
+        ];
+        let android_jar = android_build::android_jar(None);
 
         let out_cls_dir = out_dir.join("classes");
         if out_cls_dir.try_exists().unwrap() {
@@ -41,10 +42,11 @@ fn main() {
         if android_jar.is_none() {
             err_string.replace("Failed to find android.jar.".to_string());
         } else if let Err(s) =
-            compile_java_source(sources, [android_jar.unwrap()], out_cls_dir.clone())
+            compile_java_source(sources, [android_jar.clone().unwrap()], out_cls_dir.clone())
         {
             err_string.replace(s);
-        } else if let Err(s) = build_dex_file(out_cls_dir.clone(), [], out_dir.clone()) {
+        } else if let Err(s) = build_dex_file(out_cls_dir.clone(), android_jar, [], out_dir.clone())
+        {
             err_string.replace(s);
         };
 
@@ -85,43 +87,27 @@ fn compile_java_source(
     class_paths: impl IntoIterator<Item = PathBuf>,
     output_dir: PathBuf,
 ) -> Result<(), String> {
-    let (java_home, java_ver) = get_java_home_ver()?;
-    if java_ver < 8 {
-        return Err(format!(
-            "The minimum required Java version is Java 8, detected version: {java_ver}."
-        ));
-    }
+    let mut java_build = JavaBuild::new();
 
-    let mut cmd = Command::new(java_home.join("bin").join("javac"));
     for java_src in source_paths {
         println!("cargo:rerun-if-changed={}", java_src.to_string_lossy());
-        cmd.arg(java_src);
+        java_build.file(java_src);
     }
 
-    use std::path::MAIN_SEPARATOR;
-    let seperator = if MAIN_SEPARATOR == '\\' { ";" } else { ":" };
-    let mut classpath_param = std::ffi::OsString::new();
     for class_path in class_paths {
         println!("cargo:rerun-if-changed={}", class_path.to_string_lossy());
-        classpath_param.push(class_path.as_os_str());
-        classpath_param.push(seperator);
-    }
-    let mut classpath_param = classpath_param.into_string().unwrap();
-    let _ = classpath_param.pop(); // remove the last seperator
-    if !classpath_param.is_empty() {
-        cmd.arg("-classpath").arg(classpath_param);
+        java_build.class_path(class_path);
     }
 
-    cmd.arg("-d").arg(output_dir);
-    if java_ver > 8 {
-        cmd.arg("--release").arg("8");
-    }
-    cmd.arg("-encoding").arg("UTF-8");
+    java_build.java_source_version(8).java_target_version(8);
+    java_build.classes_out_dir(output_dir);
 
     // Execute the command
-    let result = cmd
+    let result = java_build
+        .command()
+        .map_err(|e| e.to_string())?
         .output()
-        .map_err(|e| format!("Failed to execute javac: {:?}", e))?;
+        .map_err(|e| format!("Failed to execute javac: {e:?}"))?;
     if result.status.success() {
         Ok(())
     } else {
@@ -132,171 +118,38 @@ fn compile_java_source(
     }
 }
 
-/// Reference: <https://developer.android.com/tools/d8>
 fn build_dex_file(
     compiled_classes_path: PathBuf,
+    android_jar: Option<PathBuf>,
     jar_dependencies: impl IntoIterator<Item = PathBuf>,
     output_dir: PathBuf,
 ) -> Result<(), String> {
-    let java = get_java_home_ver()?.0.join("bin").join("java");
-    let d8_jar_path = get_d8_jar_path().ok_or("Failed to find d8.jar.".to_string())?;
-    let android_jar_path =
-        get_android_jar_path().ok_or("Failed to find android.jar.".to_string())?;
-
-    let compiled_classes = collect_files_with_ext(&compiled_classes_path, "class")
-        .map_err(|e| format!("Failed to walk through the compiled classes path: {e}."))?;
+    let mut dexer = Dexer::new();
+    if let Some(android_jar) = android_jar {
+        dexer.android_jar(&android_jar);
+    }
     let dependencies: Vec<_> = jar_dependencies.into_iter().collect();
-
-    let mut cmd = Command::new(java);
-    cmd.arg("-classpath")
-        .arg(d8_jar_path)
-        .arg("com.android.tools.r8.D8");
-    cmd.arg("--lib").arg(android_jar_path);
     for dependency in dependencies.iter() {
         println!("cargo:rerun-if-changed={}", dependency.to_string_lossy());
-        cmd.arg("--classpath").arg(dependency);
+        dexer.class_path(dependency);
     }
-    cmd.arg("--classpath").arg(compiled_classes_path);
-    cmd.arg("--output").arg(output_dir);
-    // disable multidex (workaround for the DexClassLoader before Android 8.0)
-    cmd.arg("--min-api").arg("20");
-    if env::var("PROFILE") == Ok("release".to_string()) {
-        cmd.arg("--release");
-    }
-    cmd.args(compiled_classes).args(dependencies.iter());
+    dexer
+        .android_min_api(20)
+        .release(env::var("PROFILE").as_ref().map(|s| s.as_str()) == Ok("release"))
+        .class_path(&compiled_classes_path)
+        .no_desugaring(true)
+        .out_dir(output_dir)
+        .files(dependencies.iter())
+        .collect_classes(&compiled_classes_path)
+        .map_err(|e| e.to_string())?;
 
     // Execute the command
-    let result = cmd
-        .output()
-        .map_err(|e| format!("Failed to execute d8.jar: {:?}", e))?;
-    if result.status.success() {
+    let result = dexer
+        .run()
+        .map_err(|e| format!("Failed to execute d8.jar: {e:?}"))?;
+    if result.success() {
         Ok(())
     } else {
-        Err(format!(
-            "java d8.jar invocation failed: {}",
-            String::from_utf8_lossy(&result.stderr)
-        ))
+        Err(format!("Dexer invocation failed: {result}"))
     }
-}
-
-fn get_java_home_ver() -> Result<(PathBuf, i32), String> {
-    println!("cargo:rerun-if-env-changed=JAVA_HOME");
-    let java_home = java_locator::locate_java_home()
-        .map(PathBuf::from)
-        .map_err(|_| "Failed to locate java home.".to_string())?;
-
-    let javac = java_home.join("bin").join("javac");
-    let output = Command::new(&javac)
-        .arg("-version")
-        .output()
-        .map_err(|e| format!("Failed to execute javac -version: {:?}", e))?;
-    if !output.status.success() {
-        return Err(format!(
-            "Failed to get javac version: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    let mut version_output = String::from_utf8_lossy(&output.stdout);
-    if version_output.is_empty() {
-        // old versions of java use stderr
-        version_output = String::from_utf8_lossy(&output.stderr);
-    }
-    let version = version_output
-        .split_whitespace()
-        .nth(1)
-        .and_then(|v| v.split('-').next())
-        .unwrap_or_default();
-    let mut java_ver: i32 = version
-        .split('.')
-        .next()
-        .unwrap_or("0")
-        .parse()
-        .unwrap_or(0);
-    if java_ver == 1 {
-        // Before java 9, the version was something like javac 1.8
-        java_ver = version
-            .split('.')
-            .nth(1)
-            .unwrap_or("0")
-            .parse()
-            .unwrap_or(0);
-    }
-    if java_ver > 0 {
-        Ok((java_home, java_ver))
-    } else {
-        Err(format!("Failed to parse javac version: '{version}'"))
-    }
-}
-
-fn get_android_home() -> Option<PathBuf> {
-    env_var("ANDROID_HOME")
-        .or_else(|_| env_var("ANDROID_SDK_ROOT"))
-        .map(PathBuf::from)
-        .ok()
-}
-
-fn get_android_jar_path() -> Option<PathBuf> {
-    let platforms_path = get_android_home()?.join("platforms");
-    find_latest_version(&platforms_path, "android.jar")
-        .map(|ver| platforms_path.join(ver).join("android.jar"))
-}
-
-fn get_d8_jar_path() -> Option<PathBuf> {
-    let build_tools_path = get_android_home()?.join("build-tools");
-    let d8_sub_path = Path::new("lib").join("d8.jar");
-    find_latest_version(&build_tools_path, &d8_sub_path)
-        .map(|ver| build_tools_path.join(ver).join(d8_sub_path))
-}
-
-/// Rerun the build script if the variable is changed. Do not use it for variables set by Cargo.
-fn env_var(var: &str) -> Result<String, env::VarError> {
-    println!("cargo:rerun-if-env-changed={}", var);
-    env::var(var)
-}
-
-/// Finds subdirectories in which the subpath `arg` exists, and returns the maximum
-/// item name in lexicographical order based on `Ord` impl of `std::path::Path`.
-/// NOTE: the behavior can be changed in the future.
-fn find_latest_version(base: impl AsRef<Path>, arg: impl AsRef<Path>) -> Option<String> {
-    std::fs::read_dir(base)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().join(arg.as_ref()).exists())
-        .map(|entry| entry.file_name())
-        .max()
-        .and_then(|name| name.to_os_string().into_string().ok())
-}
-
-/// Collect all files with the given extension in the given directory recursively.
-fn collect_files_with_ext(
-    path: impl AsRef<Path>,
-    extension: &str,
-) -> std::io::Result<Vec<PathBuf>> {
-    // From `std::fs::read_dir` examples: walking a directory only visiting files.
-    fn visit_dirs(
-        dir: impl AsRef<Path>,
-        cb: &mut impl FnMut(&fs::DirEntry),
-    ) -> std::io::Result<()> {
-        if dir.as_ref().is_dir() {
-            for entry in fs::read_dir(dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_dir() {
-                    visit_dirs(&path, cb)?;
-                } else {
-                    cb(&entry);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    let extension = Some(std::ffi::OsStr::new(extension));
-    let mut file_paths = Vec::new();
-    visit_dirs(path, &mut |entry| {
-        if entry.path().extension() == extension {
-            file_paths.push(entry.path());
-        }
-    })?;
-    Ok(file_paths)
 }

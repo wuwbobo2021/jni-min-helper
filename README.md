@@ -5,6 +5,8 @@ While the JNI interface was initially designed for calling native code from Java
 
 This crate aims to be a reliable dependency for cross-platform libraries to introduce initial Android support, without relying on some specific version of Gradle. Older Android versions can be supported as well.
 
+However, please consider using [java-spaghetti](https://github.com/Dirbaio/java-spaghetti) when its `0.3.0` version becomes available.
+
 Documentation: <https://docs.rs/jni-min-helper/latest>.
 
 The dynamic proxy implementation is inspired by [droid-wrap-utils](https://crates.io/crates/droid-wrap-utils). `droid-wrap` is another project with greater ambition, however the initial version is less reliable.

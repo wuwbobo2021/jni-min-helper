@@ -394,8 +394,7 @@ extern "C" fn rust_callback<'a>(
         Err(e) => {
             let th = std::thread::current().id();
             env.throw(format!(
-                "{th:?}: Rust handler of proxy {rust_hdl_id}: {:?}",
-                e
+                "{th:?}: Rust handler of proxy {rust_hdl_id}: {e:?}",
             ))
             .unwrap();
             JObject::null()

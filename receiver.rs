@@ -66,7 +66,7 @@ impl BroadcastReceiver {
                 [cls_rec_hdl.as_class()],
                 move |env, method, args| {
                     if method.get_method_name(env)? == "onReceive" && args.len() == 2 {
-                        // usually, `jni_clear_ex` will be called inside the closure on exception;
+                        // `jni_clear_ex` may be called inside the closure on exception;
                         // if not, then this will prevent the exception from throwing.
                         let _ = handler(env, args[0], args[1]).map_err(crate::jni_clear_ex_silent);
                         let _ = env.exception_clear();
@@ -125,7 +125,7 @@ impl BroadcastReceiver {
     /// registered for this receiver will be removed.
     #[inline(always)]
     pub fn unregister(&self) -> Result<(), Error> {
-        jni_with_env(|env| self.unregister_inner(env).map_err(jni_clear_ex))
+        jni_with_env(|env| self.unregister_inner(env))
     }
 
     fn unregister_inner(&self, env: &mut JNIEnv<'_>) -> Result<(), Error> {

@@ -1,5 +1,9 @@
 # Changes
 
+## 0.3.1
+* `jni_with_env` now clears the exception if the closure's result is `Err(Error::JavaException)`; this means any `JNIEnv` method call followed by an `?` without `.map_err(jni_clear_ex)` becomes "acceptable" (?) within `jni_with_env` closures. However, temporary structs created in the closure with `Drop` implementation doing JNI operations not listed in <https://docs.oracle.com/javase/8/docs/technotes/guides/jni/spec/design.html#exception_handling> will still *crash* the program.
+* Added `android-build` build dependency because `Dexer` is added in that crate.
+
 ## 0.3.0
 * Workaround for <https://github.com/jni-rs/jni-rs/issues/558>: removed function `jni_attach_vm`, use `jni_with_env` instead; `jni_get_vm` and `jni_set_vm` are marked with `unsafe`; added function `jni_attach_permanently()`.
 * Fixed a bug in `JObjectGet::get_string`: it did not support Unicode characters outside of the BMP (like emojis).
