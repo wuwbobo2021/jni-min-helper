@@ -1,5 +1,5 @@
 # jni-min-helper
-Minimal helper for `jni-rs`, supporting dynamic proxies, Android dex embedding and broadcast receiver. Used for calling Java code from Rust.
+Minimal helper for `jni-rs`, supporting dynamic proxies, Android dex embedding, runtime permission request and broadcast receiver. Used for calling Java code from Rust.
 
 While the JNI interface was initially designed for calling native code from Java, this library provides a bit more convenient functions for handling exceptions and avoiding memory leaks, preventing the Rust application from crashing.
 
@@ -185,6 +185,7 @@ fn background_loop() {
     ])
     .unwrap();
     log::info!("Built broadcast waiter.");
+    // TODO: the android_main() thread should tell this thread to exit on stop/destroy event.
     loop {
         if let Some(intent) = waiter.wait_timeout(Duration::from_secs(1)) {
             let _ = jni_with_env(|env| {

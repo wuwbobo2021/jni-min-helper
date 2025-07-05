@@ -330,7 +330,7 @@ fn new_hdl_id(handlers_locked: &HashMap<i64, Arc<RustHandler>>) -> i64 {
     }
 }
 
-fn read_object_array<'e>(
+pub(crate) fn read_object_array<'e>(
     arr: &JObjectArray<'_>,
     env: &mut JNIEnv<'e>,
 ) -> Result<Vec<AutoLocal<'e>>, Error> {
