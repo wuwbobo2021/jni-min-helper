@@ -118,7 +118,7 @@ impl JniClassLoader {
             let class_name = class_name_to_java(name).new_jobject(env)?;
             env.call_method(
                 self,
-                "findClass",
+                "loadClass",
                 "(Ljava/lang/String;)Ljava/lang/Class;",
                 &[(&class_name).into()],
             )
@@ -230,6 +230,7 @@ impl JniClassLoader {
     }
 
     /// Replaces the activity thread's class loader with this loader.
+    /// Do not use this function unless there's no other possible solution.
     #[cfg(feature = "proxy")]
     pub fn replace_app_loader(&self) -> Result<(), Error> {
         jni_with_env(|env| {
