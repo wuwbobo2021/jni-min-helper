@@ -1,5 +1,5 @@
-//! Minimal helper for `jni-rs`, supporting dynamic proxies, Android dex
-//! embedding and broadcast receiver. Used for calling Java code from Rust.
+//! Minimal helper for `jni-rs`, supporting dynamic proxies, Android dex embedding,
+//! permission request and broadcast receiver. Used for calling Java code from Rust.
 //!
 //! Please consider using [java-spaghetti](https://github.com/Dirbaio/java-spaghetti)
 //! when its `0.3.0` version becomes available.
@@ -7,7 +7,7 @@
 //! `jni` is re-exported here for the user to import `jni` functions, avoiding
 //! version inconsistency between `jni` and this crate.
 //!
-//! This crate uses `ndk_context::AndroidContext` on Android, usually initialized
+//! This crate uses [ndk_context::AndroidContext] on Android, usually initialized
 //! by `android_activity`. Examples for Android are provided in the crate page.
 //!
 //! Please make sure you are viewing documentation generated for your target.
@@ -21,7 +21,7 @@ pub use proxy::*;
 
 #[cfg(feature = "proxy")]
 #[cfg(target_os = "android")]
-pub use receiver::*;
+pub use {permission::*, receiver::*};
 
 #[cfg(not(target_os = "android"))]
 macro_rules! warn {
@@ -42,6 +42,10 @@ mod proxy;
 #[cfg(feature = "proxy")]
 #[cfg(target_os = "android")]
 mod receiver;
+
+#[cfg(feature = "proxy")]
+#[cfg(target_os = "android")]
+mod permission;
 
 use jni::{
     errors::Error,

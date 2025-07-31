@@ -1,4 +1,7 @@
-use crate::{convert::*, jni_clear_ex_ignore, jni_with_env, AutoLocalGlobalize, JObjectAutoLocal};
+use crate::{
+    convert::*, jni_clear_ex, jni_clear_ex_ignore, jni_with_env, AutoLocalGlobalize,
+    JObjectAutoLocal,
+};
 use jni::{errors::Error, objects::*};
 
 #[allow(unused)]
@@ -65,7 +68,7 @@ impl std::ops::Deref for JniClassLoader {
 }
 
 impl JniClassLoader {
-    /// Get the context class loader via `getSystemClassLoader()`.
+    /// Gets the context class loader via `getSystemClassLoader()`.
     #[cfg(not(target_os = "android"))]
     pub fn app_loader() -> Result<Self, Error> {
         jni_with_env(|env| {
@@ -81,7 +84,7 @@ impl JniClassLoader {
         })
     }
 
-    /// Get the class loader from the current Android context.
+    /// Gets the class loader from the current Android context.
     #[cfg(target_os = "android")]
     pub fn app_loader() -> Result<Self, Error> {
         jni_with_env(|env| {
@@ -91,6 +94,12 @@ impl JniClassLoader {
                 .globalize(env)
                 .map(|inner| Self { inner })
         })
+    }
+
+    /// Gets the class loader created and used by `jni-min-helper` for loading proxies.
+    #[cfg(all(feature = "proxy", target_os = "android"))]
+    pub fn helper_loader() -> Result<&'static Self, Error> {
+        get_helper_class_loader()
     }
 
     /// Loads a class of given binary name, returns a global reference of its
@@ -109,7 +118,7 @@ impl JniClassLoader {
             let class_name = class_name_to_java(name).new_jobject(env)?;
             env.call_method(
                 self,
-                "findClass",
+                "loadClass",
                 "(Ljava/lang/String;)Ljava/lang/Class;",
                 &[(&class_name).into()],
             )
@@ -219,6 +228,37 @@ impl JniClassLoader {
             .map(|inner| Self { inner })
         })
     }
+
+    /// Replaces the activity thread's class loader with this loader.
+    /// Do not use this function unless there's no other possible solution.
+    #[cfg(feature = "proxy")]
+    pub fn replace_app_loader(&self) -> Result<(), Error> {
+        jni_with_env(|env| {
+            let th = get_activity_thread(env)?;
+            let packages = env
+                .get_field(&th, "mPackages", "Landroid/util/ArrayMap;")
+                .get_object(env)?;
+            let pkg_name = android_app_package_name().new_jobject(env)?;
+            let loaded_apk_weak = env
+                .call_method(
+                    &packages,
+                    "get",
+                    "(Ljava/lang/Object;)Ljava/lang/Object;",
+                    &[(&pkg_name).into()],
+                )
+                .get_object(env)?;
+            let loaded_apk = env
+                .call_method(&loaded_apk_weak, "get", "()Ljava/lang/Object;", &[])
+                .get_object(env)?;
+            env.set_field(
+                &loaded_apk,
+                "mClassLoader",
+                "Ljava/lang/ClassLoader;",
+                self.inner.as_obj().into(),
+            )
+            .map_err(jni_clear_ex)
+        })
+    }
 }
 
 /// Gets the current `android.content.Context`, usually a reference of `NativeActivity`.
@@ -237,15 +277,8 @@ pub fn android_context() -> &'static JObject<'static> {
             if !obj.is_null() {
                 Ok((env.new_global_ref(obj)?, true))
             } else {
-                let at = env
-                    .call_static_method(
-                        "android/app/ActivityThread",
-                        "currentActivityThread",
-                        "()Landroid/app/ActivityThread;",
-                        &[],
-                    )
-                    .get_object(env)?;
-                env.call_method(at, "getApplication", "()Landroid/app/Application;", &[])
+                let th = get_activity_thread(env)?;
+                env.call_method(&th, "getApplication", "()Landroid/app/Application;", &[])
                     .get_object(env)
                     .globalize(env)
                     .map(|ctx| (ctx, false))
@@ -259,6 +292,17 @@ pub fn android_context() -> &'static JObject<'static> {
         warn!("Using `Application` (No `Activity` and UI availability); other crates may fail.");
     }
     ctx.as_obj()
+}
+
+#[cfg(target_os = "android")]
+fn get_activity_thread<'a>(env: &mut jni::JNIEnv<'a>) -> Result<AutoLocal<'a, JObject<'a>>, Error> {
+    env.call_static_method(
+        "android/app/ActivityThread",
+        "currentActivityThread",
+        "()Landroid/app/ActivityThread;",
+        &[],
+    )
+    .get_object(env)
 }
 
 /// Gets the API level (SDK version) of the current Android OS.
