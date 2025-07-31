@@ -29,7 +29,15 @@ type RequestResult = Vec<(String, bool)>;
 
 static MUTEX_PERM_REQ: Mutex<Option<Sender<RequestResult>>> = Mutex::new(None);
 
-/// Android runtime permission (introduced in Android 6.0, API level 23) request utility.
+/// Android runtime permission request utility.
+///
+/// Using this utility *requires* the activity `rust.jniminhelper.PermActivity` to be declared
+/// in the `AndroidManifest.xml`, and this activity must be compiled in the package's `classes.dex`
+/// file unless the problematic `JniClassLoader::helper_loader().unwrap().replace_app_loader()`
+/// hack is done. `PermActivity.java` can be found in the source code.
+///
+/// For native activity applications, `cargo-apk` does not support these things at the time of
+/// publishing this version of `jni-min-helper` (`cargo-apk2` has introduced these features).
 pub struct PermissionRequest {
     receiver: Receiver<RequestResult>,
 }
@@ -64,8 +72,9 @@ impl PermissionRequest {
     }
 
     /// Starts a permission request for permission names listed in `permissions`.
-    /// Returns `Error::TryLock` if a previous requested in unfinished;
-    /// returns `Ok(None)` if the Android API level is less than 23.
+    /// Returns `Error::TryLock` if a previous request is unfinished;
+    /// returns `Ok(None)` if all permissions are already granted or the Android
+    /// API level is less than 23.
     pub fn request<'a>(
         title: &str,
         permissions: impl IntoIterator<Item = &'a str>,

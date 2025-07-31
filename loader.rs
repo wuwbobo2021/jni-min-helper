@@ -1,7 +1,4 @@
-use crate::{
-    convert::*, jni_clear_ex, jni_clear_ex_ignore, jni_with_env, AutoLocalGlobalize,
-    JObjectAutoLocal,
-};
+use crate::{convert::*, jni_clear_ex_ignore, jni_with_env, AutoLocalGlobalize, JObjectAutoLocal};
 use jni::{errors::Error, objects::*};
 
 #[allow(unused)]
@@ -233,6 +230,7 @@ impl JniClassLoader {
     /// Do not use this function unless there's no other possible solution.
     #[cfg(feature = "proxy")]
     pub fn replace_app_loader(&self) -> Result<(), Error> {
+        use crate::jni_clear_ex;
         jni_with_env(|env| {
             let th = get_activity_thread(env)?;
             let packages = env
