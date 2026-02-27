@@ -1,24 +1,24 @@
 use std::sync::{Mutex, OnceLock};
 
 #[cfg(not(feature = "futures"))]
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 #[cfg(feature = "futures")]
-use futures_channel::oneshot::{channel, Receiver, Sender};
+use futures_channel::oneshot::{Receiver, Sender, channel};
 
 use crate::{
+    JObjectAutoLocal,
     convert::*,
     jni_clear_ex, jni_with_env,
     loader::{android_api_level, android_context, get_helper_class_loader},
     proxy::read_object_array,
-    JObjectAutoLocal,
 };
 
 use jni::{
+    JNIEnv, NativeMethod,
     errors::Error,
     objects::{GlobalRef, JIntArray, JObject, JObjectArray},
     sys::jsize,
-    JNIEnv, NativeMethod,
 };
 
 const PERMISSION_GRANTED: i32 = 0;

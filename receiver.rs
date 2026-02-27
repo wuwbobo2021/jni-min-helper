@@ -1,10 +1,10 @@
-use crate::{convert::*, jni_clear_ex, jni_with_env, loader::*, proxy::*, JObjectAutoLocal};
+use crate::{JObjectAutoLocal, convert::*, jni_clear_ex, jni_with_env, loader::*, proxy::*};
 
 use jni::{
+    JNIEnv,
     errors::Error,
     objects::{GlobalRef, JMethodID, JObject},
     signature::ReturnType,
-    JNIEnv,
 };
 
 /// Handles `android.content.BroadcastReceiver` object backed by `JniProxy`.
@@ -50,9 +50,9 @@ impl BroadcastReceiver {
     /// Note: It makes sure that no exception can be thrown from `onReceive()`.
     pub fn build(
         handler: impl for<'a> Fn(&mut JNIEnv<'a>, &JObject<'a>, &JObject<'a>) -> Result<(), Error>
-            + Send
-            + Sync
-            + 'static,
+        + Send
+        + Sync
+        + 'static,
     ) -> Result<Self, Error> {
         jni_with_env(|env| {
             let loader = get_helper_class_loader()?;
@@ -270,7 +270,7 @@ mod waiter {
         fut: impl std::future::Future<Output = T>,
         dur: std::time::Duration,
     ) -> Option<T> {
-        use futures_lite::{future::block_on, FutureExt};
+        use futures_lite::{FutureExt, future::block_on};
         let fut_comp = async { Some(fut.await) };
         let fut_cancel = async {
             futures_timer::Delay::new(dur).await;

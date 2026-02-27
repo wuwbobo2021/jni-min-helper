@@ -1,142 +1,28 @@
-use crate::{convert::*, jni_clear_ex_ignore, jni_with_env, AutoLocalGlobalize, JObjectAutoLocal};
-use jni::{errors::Error, objects::*};
+#![allow(unused)]
+
+use crate::jni_with_env;
+use jni::{errors::Error, objects::JClassLoader, refs::Global};
 
 #[allow(unused)]
 use std::sync::OnceLock;
 
-#[cfg(feature = "proxy")]
 #[cfg(not(target_os = "android"))]
-const CLASS_DATA: &[u8] = include_bytes!(concat!(
+pub(crate) const CLASS_DATA: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/rust/jniminhelper/InvocHdl.class"
 ));
 
-#[cfg(feature = "proxy")]
 #[cfg(target_os = "android")]
 const DEX_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/classes.dex"));
 
-#[cfg(feature = "proxy")]
-pub(crate) fn get_helper_class_loader() -> Result<&'static JniClassLoader, Error> {
-    static CLASS_LOADER: OnceLock<JniClassLoader> = OnceLock::new();
-    #[cfg(not(target_os = "android"))]
-    if CLASS_LOADER.get().is_none() {
-        let loader = JniClassLoader::app_loader()?;
-        loader.define_class("rust/jniminhelper/InvocHdl", CLASS_DATA)?;
-        let _ = CLASS_LOADER.set(loader);
-    }
-    #[cfg(target_os = "android")]
+#[cfg(target_os = "android")]
+pub(crate) fn get_helper_class_loader() -> Result<&'static JClassLoader<'static>, Error> {
+    static CLASS_LOADER: OnceLock<Global<JClassLoader<'static>>> = OnceLock::new();
     if CLASS_LOADER.get().is_none() {
         let loader = JniClassLoader::load_dex(DEX_DATA)?;
         let _ = CLASS_LOADER.set(loader);
     }
     Ok(CLASS_LOADER.get().unwrap())
-}
-
-/// Runtime class data loader. Wraps a global reference of `java.lang.ClassLoader`.
-#[derive(Clone, Debug)]
-pub struct JniClassLoader {
-    inner: GlobalRef,
-}
-
-impl TryFrom<&JObject<'_>> for JniClassLoader {
-    type Error = Error;
-    fn try_from(value: &JObject<'_>) -> Result<Self, Self::Error> {
-        jni_with_env(|env| {
-            let cls_loader = env.find_class("java/lang/ClassLoader").auto_local(env)?;
-            value
-                .class_check(cls_loader.as_class(), env)
-                .and_then(|l| env.new_global_ref(l))
-                .map(|inner| Self { inner })
-        })
-    }
-}
-
-impl AsRef<JObject<'static>> for JniClassLoader {
-    fn as_ref(&self) -> &JObject<'static> {
-        self.inner.as_obj()
-    }
-}
-
-impl std::ops::Deref for JniClassLoader {
-    type Target = JObject<'static>;
-    fn deref(&self) -> &Self::Target {
-        self.inner.as_obj()
-    }
-}
-
-impl JniClassLoader {
-    /// Gets the context class loader via `getSystemClassLoader()`.
-    #[cfg(not(target_os = "android"))]
-    pub fn app_loader() -> Result<Self, Error> {
-        jni_with_env(|env| {
-            env.call_static_method(
-                "java/lang/ClassLoader",
-                "getSystemClassLoader",
-                "()Ljava/lang/ClassLoader;",
-                &[],
-            )
-            .get_object(env)
-            .globalize(env)
-            .map(|inner| Self { inner })
-        })
-    }
-
-    /// Gets the class loader from the current Android context.
-    #[cfg(target_os = "android")]
-    pub fn app_loader() -> Result<Self, Error> {
-        jni_with_env(|env| {
-            let context = android_context();
-            env.call_method(context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
-                .get_object(env)
-                .globalize(env)
-                .map(|inner| Self { inner })
-        })
-    }
-
-    /// Gets the class loader created and used by `jni-min-helper` for loading proxies.
-    #[cfg(all(feature = "proxy", target_os = "android"))]
-    pub fn helper_loader() -> Result<&'static Self, Error> {
-        get_helper_class_loader()
-    }
-
-    /// Loads a class of given binary name, returns a global reference of its
-    /// `java.lang.Class` object. It tries `JNIEnv::find_class()` at first.
-    pub fn load_class(&self, name: &str) -> Result<GlobalRef, Error> {
-        jni_with_env(|env| {
-            // Note: not doing this shouldn't introduce any runtime error.
-            if let Ok(cls) = env
-                .find_class(class_name_to_internal(name))
-                .map_err(jni_clear_ex_ignore)
-                .global_ref(env)
-            {
-                return Ok(cls);
-            }
-
-            let class_name = class_name_to_java(name).new_jobject(env)?;
-            env.call_method(
-                self,
-                "loadClass",
-                "(Ljava/lang/String;)Ljava/lang/Class;",
-                &[(&class_name).into()],
-            )
-            .get_object(env)
-            .and_then(|cls| cls.null_check_owned("ClassLoader.findClass() returned null"))
-            .globalize(env)
-        })
-    }
-
-    /// Loads a class of given binary name from the class file embeded at compile time,
-    /// returns a JNI global reference of its `java.lang.Class` object.
-    ///
-    /// Not available on Android, which does not use Java bytecodes or class files.
-    #[cfg(not(target_os = "android"))]
-    pub fn define_class(&self, name: &str, data: &[u8]) -> Result<GlobalRef, Error> {
-        jni_with_env(|env| {
-            env.define_class(name, self, data)
-                .global_ref(env)
-                .and_then(|cls| cls.null_check_owned("JNIEnv::define_class() returned null"))
-        })
-    }
 }
 
 #[cfg(target_os = "android")]
@@ -228,7 +114,6 @@ impl JniClassLoader {
 
     /// Replaces the activity thread's class loader with this loader.
     /// Do not use this function unless there's no other possible solution.
-    #[cfg(feature = "proxy")]
     pub fn replace_app_loader(&self) -> Result<(), Error> {
         use crate::jni_clear_ex;
         jni_with_env(|env| {
@@ -345,4 +230,15 @@ pub fn android_app_package_name() -> &'static str {
         })
         .unwrap()
     })
+}
+
+#[inline(always)]
+pub(crate) fn class_name_to_internal(name: &str) -> String {
+    name.replace(".", "/")
+}
+
+#[allow(unused)]
+#[inline(always)]
+pub(crate) fn class_name_to_java(name: &str) -> String {
+    name.replace("/", ".")
 }

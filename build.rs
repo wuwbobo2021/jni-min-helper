@@ -9,11 +9,6 @@ use std::{env, fs, path::PathBuf};
 use android_build::{Dexer, JavaBuild};
 
 fn main() {
-    // Checks if the "proxy" feature is enabled (see `Cargo.toml`)
-    if env::var("CARGO_FEATURE_PROXY").is_err() {
-        return;
-    }
-
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
     let src_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("java");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
