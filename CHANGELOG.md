@@ -1,5 +1,12 @@
 # Changes
 
+## 0.4.0
+* Adapted to `jni` 0.22, introduced the usage of binding macros.
+* Removed convenient mappers for creating `AutoLocal` and clearing exception (the `no-proxy` cargo feature is removed as well), because `jni` 0.22 pushes and pops local reference frames automatically; exception handling of `jni_with_env` becomes consistent with <https://docs.rs/jni/0.22.3/jni/vm/struct.JavaVM.html#exception-handling>.
+* Introduced generated bindings for Java primitive type wrapper classes. Removed trait methods for other type convertion operations because `jni` has introduced many of them.
+* Removed `JniClassLoader` because `jni` has introduced the `JClassLoader`; for Android, use trait `DexClassLoader` for `JClassLoader` instead.
+* Removed the `replace_app_loader` method for Android.
+
 ## 0.3.2
 * Added `PermissionRequest` for Android.
 * Fixed `JniClassLoader::load_class` to use `ClassLoader.loadClass` instead of `ClassLoader.findClass`.

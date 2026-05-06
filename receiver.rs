@@ -1,11 +1,123 @@
-use crate::{JObjectAutoLocal, convert::*, jni_clear_ex, jni_with_env, loader::*, proxy::*};
+use crate::{
+    android::{AndroidContext, get_android_context, get_helper_class_loader},
+    jni_with_env,
+    proxy::DynamicProxy,
+};
 
 use jni::{
-    JNIEnv,
+    Env,
     errors::Error,
-    objects::{GlobalRef, JMethodID, JObject},
-    signature::ReturnType,
+    objects::{JClass, JObject, JString},
+    refs::{Global, Reference},
 };
+
+jni::bind_java_type! {
+    pub Intent => "android.content.Intent",
+    type_map = {
+        AndroidContext => "android.content.Context",
+    },
+    constructors {
+        fn new(),
+        fn new_with_action(action: JString),
+    },
+    methods {
+        fn get_package() -> JString,
+        fn get_type() -> JString,
+        fn get_action() -> JString,
+        fn has_extra(name: JString) -> jboolean,
+        fn get_string_extra(name: JString) -> JString,
+        fn get_int_extra(name: JString, default_value: jint) -> jint,
+        fn get_short_extra(name: JString, default_value: jshort) -> jshort,
+        fn get_long_extra(name: JString, default_value: jlong) -> jlong,
+        fn get_float_extra(name: JString, default_value: jfloat) -> jfloat,
+        fn get_double_extra(name: JString, default_value: jdouble) -> jdouble,
+        fn get_byte_extra(name: JString, default_value: jbyte) -> jbyte,
+        fn get_char_extra(name: JString, default_value: jchar) -> jchar,
+        fn get_boolean_extra(name: JString, default_value: jboolean) -> jboolean,
+        fn get_byte_array_extra(name: JString) -> jbyte[],
+        fn set_action(action: JString) -> Intent,
+        fn set_class(package_context: AndroidContext, cls: JClass) -> Intent,
+        fn put_extra_bool {
+            name = "putExtra",
+            sig = (name: JString, value: jboolean) -> Intent,
+        },
+        fn put_extra_byte {
+            name = "putExtra",
+            sig = (name: JString, value: jbyte) -> Intent,
+        },
+        fn put_extra_byte_array {
+            name = "putExtra",
+            sig = (name: JString, value: jbyte[]) -> Intent,
+        },
+        fn put_extra_char {
+            name = "putExtra",
+            sig = (name: JString, value: jchar) -> Intent,
+        },
+        fn put_extra_double {
+            name = "putExtra",
+            sig = (name: JString, value: jdouble) -> Intent,
+        },
+        fn put_extra_float {
+            name = "putExtra",
+            sig = (name: JString, value: jfloat) -> Intent,
+        },
+        fn put_extra_int {
+            name = "putExtra",
+            sig = (name: JString, value: jint) -> Intent,
+        },
+        fn put_extra_string {
+            name = "putExtra",
+            sig = (name: JString, value: JString) -> Intent,
+        },
+        fn put_extra_string_array {
+            name = "putExtra",
+            sig = (name: JString, value: JString[]) -> Intent,
+        },
+        fn put_extra_long {
+            name = "putExtra",
+            sig = (name: JString, value: jlong) -> Intent,
+        },
+        fn put_extra_short {
+            name = "putExtra",
+            sig = (name: JString, value: jshort) -> Intent,
+        },
+    }
+}
+
+jni::bind_java_type! {
+    pub IntentFilter => "android.content.IntentFilter",
+    constructors {
+        fn new(),
+        fn new_with_action(action: JString),
+    },
+    methods {
+        fn add_action(action: JString),
+        fn add_category(category: JString),
+        fn add_data_type(type_: JString),
+    }
+}
+
+jni::bind_java_type! {
+    pub(crate) AndroidBroadcastReceiver => "android.content.BroadcastReceiver",
+}
+
+jni::bind_java_type! {
+    BroadcastRec => "rust.jniminhelper.BroadcastRec",
+    type_map = {
+        BroadcastRecHdl => "rust.jniminhelper.BroadcastRec$BroadcastRecHdl",
+        AndroidBroadcastReceiver => "android.content.BroadcastReceiver",
+    },
+    constructors {
+        fn new(hdl: BroadcastRecHdl),
+    },
+    is_instance_of = {
+        AndroidBroadcastReceiver,
+    }
+}
+
+jni::bind_java_type! {
+    BroadcastRecHdl => "rust.jniminhelper.BroadcastRec$BroadcastRecHdl",
+}
 
 /// Handles `android.content.BroadcastReceiver` object backed by `JniProxy`.
 ///
@@ -13,8 +125,8 @@ use jni::{
 /// maintaining any internal state. However, `unregister()` is called on `drop()`.
 #[derive(Debug)]
 pub struct BroadcastReceiver {
-    receiver: GlobalRef,
-    proxy: Option<JniProxy>, // taken on `forget()`
+    receiver: Global<AndroidBroadcastReceiver<'static>>,
+    proxy: Option<DynamicProxy>, // taken on `forget()`
     forget: bool,
 }
 
@@ -34,10 +146,7 @@ impl std::ops::Deref for BroadcastReceiver {
 impl Drop for BroadcastReceiver {
     fn drop(&mut self) {
         if !self.forget {
-            let _ = jni_with_env(|env| {
-                self.unregister_inner(env)
-                    .map_err(crate::jni_clear_ex_ignore)
-            });
+            let _ = self.unregister();
         }
     }
 }
@@ -47,44 +156,42 @@ impl BroadcastReceiver {
     ///
     /// The two Java object references passed to the closure are `context` and `intent`.
     ///
-    /// Note: It makes sure that no exception can be thrown from `onReceive()`.
+    /// Note: without a Rust panic, no exception may be thrown from `onReceive()`.
     pub fn build(
-        handler: impl for<'a> Fn(&mut JNIEnv<'a>, &JObject<'a>, &JObject<'a>) -> Result<(), Error>
+        handler: impl for<'a> Fn(&mut Env<'a>, JObject<'a>, Intent<'a>) -> Result<(), Error>
         + Send
         + Sync
         + 'static,
     ) -> Result<Self, Error> {
         jni_with_env(|env| {
-            let loader = get_helper_class_loader()?;
-            let cls_rec = loader.load_class("rust/jniminhelper/BroadcastRec")?;
-            let cls_rec_hdl =
-                loader.load_class("rust/jniminhelper/BroadcastRec$BroadcastRecHdl")?;
-
-            let proxy = JniProxy::build(
+            let loader = &jni::refs::LoaderContext::Loader(get_helper_class_loader()?);
+            let _ = BroadcastRecHdlAPI::get(env, loader)?;
+            let _ = BroadcastRecAPI::get(env, loader)?;
+            let cls_rec_hdl = BroadcastRecHdl::lookup_class(env, loader)?;
+            use std::ops::Deref;
+            let proxy = DynamicProxy::build(
                 env,
-                Some(loader),
-                [cls_rec_hdl.as_class()],
+                loader,
+                [AsRef::<JClass>::as_ref(&cls_rec_hdl.deref())],
                 move |env, method, args| {
-                    if method.get_method_name(env)? == "onReceive" && args.len() == 2 {
-                        // `jni_clear_ex` may be called inside the closure on exception;
-                        // if not, then this will prevent the exception from throwing.
-                        let _ = handler(env, args[0], args[1]).map_err(crate::jni_clear_ex_silent);
-                        let _ = env.exception_clear();
+                    if &method.get_name(env)?.to_string() == "onReceive" && args.len(env)? == 2 {
+                        let context = args.get_element(env, 0)?;
+                        let intent = args.get_element(env, 1)?;
+                        let intent = Intent::cast_local(env, intent)?;
+                        let _ = handler(env, context, intent);
+                        env.exception_clear();
                     }
-                    JniProxy::void(env)
+                    Ok(JObject::null())
                 },
             )?;
 
-            let receiver = env
-                .new_object(
-                    cls_rec.as_class(),
-                    "(Lrust/jniminhelper/BroadcastRec$BroadcastRecHdl;)V",
-                    &[(&proxy).into()],
-                )
-                .global_ref(env)?;
+            let receiver_hdl = env.new_local_ref(proxy.as_ref())?;
+            let receiver_hdl = env.cast_local::<BroadcastRecHdl>(receiver_hdl)?;
+            let receiver = BroadcastRec::new(env, receiver_hdl)?;
+            let receiver = AndroidBroadcastReceiver::cast_local(env, receiver)?;
 
             Ok(Self {
-                receiver,
+                receiver: env.new_global_ref(receiver)?,
                 proxy: Some(proxy),
                 forget: false,
             })
@@ -92,16 +199,11 @@ impl BroadcastReceiver {
     }
 
     /// Registers the receiver to the current Android context.
-    pub fn register(&self, intent_filter: &JObject<'_>) -> Result<(), Error> {
+    pub fn register(&self, intent_filter: &IntentFilter<'_>) -> Result<(), Error> {
         jni_with_env(|env| {
-            let context = android_context();
-            env.call_method(
-                context,
-                "registerReceiver",
-                "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;",
-                &[(&self.receiver).into(), (&intent_filter).into()]
-            )
-            .clear_ex()
+            let context = get_android_context();
+            context.register_receiver(env, &self.receiver, intent_filter)?;
+            Ok(())
         })
     }
 
@@ -109,14 +211,8 @@ impl BroadcastReceiver {
     /// that matches a single `action` with no data.
     pub fn register_for_action(&self, action: &str) -> Result<(), Error> {
         jni_with_env(|env| {
-            let action = action.new_jobject(env)?;
-            let filter = env
-                .new_object(
-                    "android/content/IntentFilter",
-                    "(Ljava/lang/String;)V",
-                    &[(&action).into()],
-                )
-                .auto_local(env)?;
+            let action = JString::new(env, action)?;
+            let filter = IntentFilter::new_with_action(env, action)?;
             self.register(&filter)
         })
     }
@@ -125,51 +221,19 @@ impl BroadcastReceiver {
     /// registered for this receiver will be removed.
     #[inline(always)]
     pub fn unregister(&self) -> Result<(), Error> {
-        jni_with_env(|env| self.unregister_inner(env))
-    }
-
-    fn unregister_inner(&self, env: &mut JNIEnv<'_>) -> Result<(), Error> {
-        let context = android_context();
-        env.call_method(
-            context,
-            "unregisterReceiver",
-            "(Landroid/content/BroadcastReceiver;)V",
-            &[(&self.receiver).into()],
-        )
-        .map(|_| ())
-    }
-
-    /// Gets the action name of the received `android.content.Intent`.
-    #[inline]
-    pub fn get_intent_action<'a>(
-        intent: impl AsRef<JObject<'a>>,
-        env: &mut JNIEnv<'_>,
-    ) -> Result<String, Error> {
-        use std::sync::OnceLock;
-        static STORE: OnceLock<(GlobalRef, JMethodID)> = OnceLock::new();
-        if STORE.get().is_none() {
-            let class_intent = env.find_class("android/content/Intent").global_ref(env)?;
-            let method_get_action = env
-                .get_method_id(&class_intent, "getAction", "()Ljava/lang/String;")
-                .map_err(jni_clear_ex)?;
-            let _ = STORE.set((class_intent, method_get_action));
-        }
-        let store = STORE.get().unwrap();
-        let (class, method) = (store.0.as_class(), &store.1);
-
-        intent.class_check(class, env)?;
-        unsafe { env.call_method_unchecked(intent, method, ReturnType::Object, &[]) }
-            .get_object(env)?
-            .get_string(env)
+        jni_with_env(|env| {
+            let context = get_android_context();
+            context.unregister_receiver(env, &self.receiver).map(|_| ())
+        })
     }
 
     /// Leaks the Rust handler and returns the global reference of the broadcast
     /// receiver. It prevents deregistering of the receiver on dropping. This is
     /// useful if it is created for *once* in the program.
-    pub fn forget(mut self) -> GlobalRef {
+    pub fn forget(mut self) -> Global<JObject<'static>> {
         self.forget = true;
         self.proxy.take().unwrap().forget();
-        self.receiver.clone()
+        jni_with_env(|env| env.new_cast_global_ref::<JObject>(&self.receiver)).unwrap()
     }
 }
 
@@ -198,7 +262,7 @@ mod waiter {
     #[derive(Debug)]
     struct BroadcastWaiterInner {
         waker: atomic_waker::AtomicWaker,
-        intents: Mutex<VecDeque<GlobalRef>>,
+        intents: Mutex<VecDeque<Global<Intent<'static>>>>,
     }
 
     impl BroadcastWaiter {
@@ -216,10 +280,11 @@ mod waiter {
                 if intent.is_null() {
                     return Ok(());
                 }
+                let intent = Intent::cast_local(env, intent)?;
                 let Some(inner) = inner_weak.upgrade() else {
                     return Ok(());
                 };
-                let intent = env.new_global_ref(intent).map_err(jni_clear_ex)?;
+                let intent = env.new_global_ref(intent)?;
                 inner.intents.lock().unwrap().push_back(intent);
                 inner.waker.wake();
                 Ok(())
@@ -242,31 +307,22 @@ mod waiter {
 
         /// Takes the next received intent if available. This shouldn't conflict
         /// with the asynchonous feature (which requires a mutable reference).
-        pub fn take_next(&self) -> Option<GlobalRef> {
+        pub fn take_next(&self) -> Option<Global<Intent<'static>>> {
             self.inner.intents.lock().unwrap().pop_front()
         }
 
         /// Waits for receiving an intent.
         /// Note: Waiting in the `android_main()` thread will prevent it from receiving.
-        pub fn wait_timeout(&mut self, timeout: Duration) -> Option<GlobalRef> {
+        pub fn wait_timeout(&mut self, timeout: Duration) -> Option<Global<Intent<'static>>> {
             let fut = BroadcastWaiterFuture { waiter: self };
-            block_for_timeout(fut, timeout).unwrap_or(None)
-        }
-
-        /// Gets the action name of the received `android.content.Intent`.
-        #[inline(always)]
-        pub fn get_intent_action<'a>(
-            intent: impl AsRef<JObject<'a>>,
-            env: &mut JNIEnv<'_>,
-        ) -> Result<String, Error> {
-            BroadcastReceiver::get_intent_action(intent, env)
+            block_with_timeout(fut, timeout).unwrap_or(None)
         }
     }
 
     /// Convenient blocker for asynchronous functions, based on `futures_lite` and `futures_timer`.
     /// Warning: Blocking in the `android_main()` thread will block the future's completion if it
     /// depends on event processing in this thread (check your glue crate like `android_activity`).
-    pub fn block_for_timeout<T>(
+    pub fn block_with_timeout<T>(
         fut: impl std::future::Future<Output = T>,
         dur: std::time::Duration,
     ) -> Option<T> {
@@ -280,7 +336,7 @@ mod waiter {
     }
 
     impl futures_core::Stream for BroadcastWaiter {
-        type Item = GlobalRef;
+        type Item = Global<Intent<'static>>;
 
         fn poll_next(
             self: Pin<&mut Self>,
@@ -310,7 +366,7 @@ mod waiter {
     }
 
     impl<'a> std::future::Future for BroadcastWaiterFuture<'a> {
-        type Output = Option<GlobalRef>;
+        type Output = Option<Global<Intent<'static>>>;
 
         fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
             if let task::Poll::Ready(intent) = self.waiter.poll_next(cx) {

@@ -1,4 +1,4 @@
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 #[cfg(not(feature = "futures"))]
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -7,23 +7,28 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use futures_channel::oneshot::{Receiver, Sender, channel};
 
 use crate::{
-    JObjectAutoLocal,
-    convert::*,
-    jni_clear_ex, jni_with_env,
-    loader::{android_api_level, android_context, get_helper_class_loader},
-    proxy::read_object_array,
+    android::{android_api_level, get_android_context, get_helper_class_loader},
+    jni_with_env,
+    receiver::Intent,
 };
 
 use jni::{
-    JNIEnv, NativeMethod,
+    Env,
     errors::Error,
-    objects::{GlobalRef, JIntArray, JObject, JObjectArray},
-    sys::jsize,
+    objects::{JClass, JIntArray, JObjectArray, JString},
+    refs::Reference,
 };
 
 const PERMISSION_GRANTED: i32 = 0;
 const EXTRA_PERM_ARRAY: &str = "rust.jniminhelper.perm_array";
 const EXTRA_TITLE: &str = "rust.jniminhelper.perm_activity_title";
+
+jni::bind_java_type! {
+    PermActivity => "rust.jniminhelper.PermActivity",
+    native_methods {
+        fn native_on_request_permissions_result(permissions: JString[], grant_results: jint[]),
+    },
+}
 
 type RequestResult = Vec<(String, bool)>;
 
@@ -33,8 +38,7 @@ static MUTEX_PERM_REQ: Mutex<Option<Sender<RequestResult>>> = Mutex::new(None);
 ///
 /// Using this utility *requires* the activity `rust.jniminhelper.PermActivity` to be declared
 /// in the `AndroidManifest.xml`, and this activity must be compiled in the package's `classes.dex`
-/// file unless the problematic `JniClassLoader::helper_loader().unwrap().replace_app_loader()`
-/// hack is done. `PermActivity.java` can be found in the source code.
+/// file. `PermActivity.java` can be found in the source code.
 ///
 /// For native activity applications, `cargo-apk` does not support these things at the time of
 /// publishing this version of `jni-min-helper` (`cargo-apk2` has introduced these features).
@@ -53,16 +57,11 @@ impl PermissionRequest {
             });
         }
         jni_with_env(|env| {
-            let context = android_context();
-            let permission = permission.new_jobject(env)?;
-            env.call_method(
-                context,
-                "checkSelfPermission",
-                "(Ljava/lang/String;)I",
-                &[(&permission).into()],
-            )
-            .get_int()
-            .map(|i| i == PERMISSION_GRANTED)
+            let context = get_android_context();
+            let permission = JString::new(env, permission)?;
+            context
+                .check_self_permission(env, permission)
+                .map(|i| i == PERMISSION_GRANTED)
         })
     }
 
@@ -97,59 +96,31 @@ impl PermissionRequest {
         }
 
         let receiver = jni_with_env(|env| {
-            let context = android_context();
+            let loader = jni::refs::LoaderContext::Loader(get_helper_class_loader()?);
+            let _ = PermActivityAPI::get(env, &loader)?;
+            let cls_perm = PermActivity::lookup_class(env, &loader)?;
 
-            let intent = env
-                .new_object("android/content/Intent", "()V", &[])
-                .auto_local(env)?;
+            let context = get_android_context();
+            let intent = Intent::new(env)?;
+            use std::ops::Deref;
+            intent.set_class(env, context, AsRef::<JClass>::as_ref(&cls_perm.deref()))?;
 
-            let cls_perm = get_perm_activity_class()?;
-            env.call_method(
-                &intent,
-                "setClass",
-                "(Landroid/content/Context;Ljava/lang/Class;)Landroid/content/Intent;",
-                &[context.into(), cls_perm.into()],
-            )
-            .clear_ex()?;
+            let extra_title = JString::new(env, EXTRA_TITLE)?;
+            let title = JString::new(env, title)?;
+            intent.put_extra_string(env, extra_title, title)?;
 
-            let extra_title = EXTRA_TITLE.new_jobject(env)?;
-            let title = title.new_jobject(env)?;
-            env.call_method(
-                &intent,
-                "putExtra",
-                "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;",
-                &[(&extra_title).into(), (&title).into()],
-            )
-            .clear_ex()?;
-
-            let arr_perms = env
-                .new_object_array(perms.len() as jsize, "java/lang/String", JObject::null())
-                .auto_local(env)?;
-            let arr_perms: &JObjectArray<'_> = arr_perms.as_ref().into();
+            let arr_perms = JObjectArray::<JString>::new(env, perms.len(), JString::null())?;
             for (i, perm) in perms.iter().enumerate() {
-                let perm = perm.new_jobject(env)?;
-                env.set_object_array_element(arr_perms, i as jsize, &perm)
-                    .map_err(jni_clear_ex)?;
+                let perm = JString::new(env, perm)?;
+                arr_perms.set_element(env, i, perm)?;
             }
-            let extra_perm_array = EXTRA_PERM_ARRAY.new_jobject(env)?;
-            env.call_method(
-                &intent,
-                "putExtra",
-                "(Ljava/lang/String;[Ljava/lang/CharSequence;)Landroid/content/Intent;",
-                &[(&extra_perm_array).into(), (&arr_perms).into()],
-            )
-            .clear_ex()?;
+            let extra_perm_array = JString::new(env, EXTRA_PERM_ARRAY)?;
+            intent.put_extra_string_array(env, &extra_perm_array, &arr_perms)?;
 
             let (tx, rx) = channel();
             MUTEX_PERM_REQ.lock().unwrap().replace(tx);
 
-            env.call_method(
-                context,
-                "startActivity",
-                "(Landroid/content/Intent;)V",
-                &[(&intent).into()],
-            )
-            .clear_ex()?;
+            context.start_activity(env, &intent)?;
             Ok(rx)
         })
         .inspect_err(|_| {
@@ -188,68 +159,40 @@ impl std::future::Future for PermissionRequest {
     }
 }
 
-fn get_perm_activity_class() -> Result<&'static JObject<'static>, Error> {
-    static PERM_ACTIVITY_CLASS: OnceLock<GlobalRef> = OnceLock::new();
-    if PERM_ACTIVITY_CLASS.get().is_none() {
-        jni_with_env(|env| {
-            let class_loader = get_helper_class_loader()?;
-            let class = class_loader.load_class("rust/jniminhelper/PermActivity")?;
-            // register `perm_callback()`
-            let native_method = NativeMethod {
-                name: "nativeOnRequestPermissionsResult".into(),
-                sig: "([Ljava/lang/String;[I)V".into(),
-                fn_ptr: perm_callback as *mut _,
-            };
-            env.register_native_methods(class.as_class(), &[native_method])
-                .map_err(jni_clear_ex)?;
-            let _ = PERM_ACTIVITY_CLASS.set(class);
-            Ok(())
-        })?;
-    }
-    Ok(PERM_ACTIVITY_CLASS.get().unwrap())
-}
-
-extern "C" fn perm_callback<'a>(
-    mut env: JNIEnv<'a>,
-    _this: JObject<'a>,
-    permissions: JObjectArray<'a>,
-    grant_results: JIntArray<'a>,
-) {
-    let Some(sender) = MUTEX_PERM_REQ.lock().unwrap().take() else {
-        warn!("Unexpected: perm_callback() received, but MUTEX_PERM_REQ is None.");
-        return;
-    };
-
-    if permissions.is_null() || grant_results.is_null() {
-        warn!("Unexpected: perm_callback() received null.");
-        let _ = sender.send(Vec::new());
-        return; // it should be impossible
-    }
-
-    let env = &mut env;
-
-    let mut result = Vec::new();
-    let Ok(permissions) = read_object_array(&permissions, env) else {
-        warn!("Error in perm_callback(): read_object_array() failed.");
-        return;
-    };
-    let mut grant_vals = vec![0; permissions.len()];
-    if env
-        .get_int_array_region(&grant_results, 0, &mut grant_vals[..])
-        .is_err()
-    {
-        warn!("Error in perm_callback(): get_int_array_region() failed.");
-        return;
-    }
-    for (i, perm) in permissions.iter().enumerate() {
-        let Ok(perm) = perm.get_string(env) else {
-            warn!("Error in perm_callback(): get_string() failed.");
-            return;
+impl PermActivityNativeInterface for PermActivityAPI {
+    type Error = Error;
+    fn native_on_request_permissions_result<'local>(
+        env: &mut Env<'local>,
+        _this: PermActivity<'local>,
+        permissions: JObjectArray<'local, jni::objects::JString<'local>>,
+        grant_results: JIntArray<'local>,
+    ) -> ::std::result::Result<(), Self::Error> {
+        let Some(sender) = MUTEX_PERM_REQ.lock().unwrap().take() else {
+            warn!("Unexpected: perm_callback() received, but MUTEX_PERM_REQ is None.");
+            return Ok(());
         };
-        result.push((perm, grant_vals[i] == PERMISSION_GRANTED));
-    }
 
-    if let Err(e) = sender.send(result) {
-        warn!("Error in perm_callback(): sender.send() failed: {e:?}.");
+        if permissions.is_null() || grant_results.is_null() {
+            // it should be unreachable
+            warn!("Unexpected: perm_callback() received null.");
+            let _ = sender.send(Vec::new());
+            return Err(Error::NullPtr("Unexpected: perm_callback() received null."));
+        }
+
+        let mut result = Vec::new();
+
+        let mut grant_vals = vec![0; grant_results.len(env)?];
+        grant_results.get_region(env, 0, &mut grant_vals)?;
+        for (i, &res_val) in grant_vals.iter().enumerate() {
+            result.push((
+                permissions.get_element(env, i)?.to_string(),
+                res_val == PERMISSION_GRANTED,
+            ));
+        }
+
+        if let Err(e) = sender.send(result) {
+            warn!("Error in perm_callback(): sender.send() failed: {e:?}.");
+        }
+        Ok(())
     }
 }

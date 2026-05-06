@@ -13,10 +13,11 @@ fn main() {
     let src_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("java");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    // TODO: fix the possible unicode output problem.
-    // Safety: this sets the variable for the current single-thread process
-    // of the executable compiled from this build script.
+    #[cfg(windows)]
     unsafe {
+        // TODO: fix the possible unicode output problem.
+        // Safety: this sets the variable for the current single-thread process
+        // of the executable compiled from this build script.
         env::set_var("JAVA_TOOL_OPTIONS", "-Duser.language=en");
     }
 

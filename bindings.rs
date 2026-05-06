@@ -23,7 +23,6 @@ bind_java_type! {
     methods {
         fn equals(arg0: JObject) -> jboolean,
         fn get_name() -> JString,
-        fn get_parameter_count() -> jint,
         fn get_parameter_types() -> JClass[],
         fn get_return_type() -> JClass,
     },
@@ -191,6 +190,7 @@ bind_java_type! {
 }
 
 #[test]
+#[cfg(not(target_os = "android"))]
 fn verify_bindings() {
     use crate::{jni_init_vm_for_unit_test, jni_with_env};
     jni_init_vm_for_unit_test();
@@ -208,6 +208,10 @@ fn verify_bindings() {
         JLongAPI::get(env, &ctx).unwrap();
         JFloatAPI::get(env, &ctx).unwrap();
         JDoubleAPI::get(env, &ctx).unwrap();
+
+        let jinteger = JInteger::new(env, 1)?;
+        let _jnum: JNumber = JNumber::cast_local(env, jinteger)?;
+
         Ok::<_, jni::errors::Error>(())
     })
     .unwrap();
