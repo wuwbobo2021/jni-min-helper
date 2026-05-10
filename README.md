@@ -36,9 +36,9 @@ publish = false
 
 [dependencies]
 log = "0.4"
-jni = "0.22.3"
-jni-min-helper = "0.4.0"
-android-activity = { version = "0.6", features = ["native-activity"] }
+jni = "0.22.4"
+jni-min-helper = "0.4.1"
+android-activity = { version = "0.6.1", features = ["native-activity"] }
 android_logger = "0.15"
 
 [lib]
@@ -124,16 +124,11 @@ jni::bind_java_type! {
     Toast => "android.widget.Toast",
     type_map = {
         AndroidContext => "android.content.Context",
-        JCharSequence => "java.lang.CharSequence",
     },
     methods {
         static fn make_text(ctx: AndroidContext, text: JCharSequence, dur: jint) -> Toast,
         fn show(),
     }
-}
-
-jni::bind_java_type! {
-    JCharSequence => "java.lang.CharSequence",
 }
 
 fn on_receive<'a>(
@@ -163,8 +158,7 @@ fn on_receive<'a>(
     log::info!("{msg}");
 
     let msg = JString::new(env, msg)?;
-    let msg = JCharSequence::cast_local(env, msg)?;
-    let toast = Toast::make_text(env, &context, msg, 0)?;
+    let toast = Toast::make_text(env, &context, msg.as_char_sequence(), 0)?;
     toast.show(env)
 }
 ```
@@ -176,7 +170,7 @@ fn on_receive<'a>(
 <summary>Using the asynchronous broadcast waiter</summary>
 
 ```toml
-jni-min-helper = { version = "0.4.0", features = ["futures"] }
+jni-min-helper = { version = "0.4.1", features = ["futures"] }
 ```
 
 ```rust
@@ -235,8 +229,12 @@ fn background_loop() {
 
 ```rust
 use android_activity::{AndroidApp, MainEvent, PollEvent};
-use jni::{jni_str, objects::JString, refs::LoaderContext};
-use jni_min_helper::{DynamicProxy, JInteger, android_app_name, android_context, jni_with_env};
+use jni::{
+    jni_str,
+    objects::{JCharSequence, JString},
+    refs::LoaderContext,
+};
+use jni_min_helper::{DynamicProxy, JInteger, android_app_name, jni_with_env};
 
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
@@ -246,11 +244,12 @@ fn android_main(app: AndroidApp) {
             .with_tag(android_app_name().as_bytes()),
     );
 
-    log::info!("starting dialog_test 1...");
-    if dialog_test(Some(&app)) {
-        log::info!("starting dialog_test 2...");
+    log::info!("starting dialog_test 1 in Rust `android_main` thread...");
+    if dialog_test(app.clone(), true) {
+        log::info!("starting dialog_test 2 in background thread...");
+        let app = app.clone();
         // this will not dismiss the dialog on main stop event.
-        std::thread::spawn(|| dialog_test(None));
+        std::thread::spawn(|| dialog_test(app, false));
     }
 
     let mut on_destroy = false;
@@ -267,8 +266,8 @@ fn android_main(app: AndroidApp) {
     }
 }
 
-fn dialog_test(app: Option<&AndroidApp>) -> bool {
-    let result = chooser_dialog(app, "Choose", &["i", "j", "k"]).unwrap();
+fn dialog_test(app: AndroidApp, in_android_main: bool) -> bool {
+    let result = chooser_dialog(&app, in_android_main, "Choose", &["i", "j", "k"]).unwrap();
     if let Some(c) = result {
         log::info!("The user choosed {c}.");
         true
@@ -276,10 +275,6 @@ fn dialog_test(app: Option<&AndroidApp>) -> bool {
         log::info!("The dialog has been dismissed.");
         false
     }
-}
-
-jni::bind_java_type! {
-    JCharSequence => "java.lang.CharSequence",
 }
 
 jni::bind_java_type! {
@@ -296,7 +291,6 @@ jni::bind_java_type! {
 jni::bind_java_type! {
     AlertDialogBuilder => "android.app.AlertDialog$Builder",
     type_map = {
-        JCharSequence => "java.lang.CharSequence",
         AndroidContext => "android.content.Context",
         AlertDialog => "android.app.AlertDialog",
         DialogOnClickListener => "android.content.DialogInterface$OnClickListener",
@@ -325,10 +319,9 @@ jni::bind_java_type! {
     DialogOnDismissListener => "android.content.DialogInterface$OnDismissListener",
 }
 
-// Provide the `app` reference if it is being called in the native main thread;
-// Otherwise, `app` should be `None` to make it work.
 fn chooser_dialog<'a>(
-    app: Option<&AndroidApp>,
+    app: &AndroidApp,
+    in_android_main: bool,
     title: &str,
     choices: &'a [&'a str],
 ) -> Result<Option<&'a str>, jni::errors::Error> {
@@ -336,13 +329,16 @@ fn chooser_dialog<'a>(
     use std::sync::{Arc, Mutex, mpsc};
 
     jni_with_env(|env| {
-        let context = env.as_cast::<AndroidContext>(android_context())?;
+        let raw_activity_global = app.activity_as_ptr() as jni::sys::jobject;
+        let context = unsafe {
+            // SAFETY: The reference / pointer is valid as long as `app` is valid
+            env.as_cast_raw::<jni::refs::Global<AndroidContext>>(&raw_activity_global)?
+        };
 
         // creates the dialog builder
         let dialog_builder = AlertDialogBuilder::new(env, context)?;
 
         let title = JString::new(env, title)?;
-        let title = JCharSequence::cast_local(env, title)?;
         let choice_items = JObjectArray::<JString>::new(env, choices.len(), JString::null())?;
         for (i, choice_name) in choices.iter().enumerate() {
             let choice_name = JString::new(env, choice_name)?;
@@ -389,7 +385,7 @@ fn chooser_dialog<'a>(
         // configure the dialog builder
         dialog_builder.set_items_listener(env, choice_items, on_click_listener)?;
         dialog_builder.set_on_dismiss_listener(env, on_dismiss_listener)?;
-        dialog_builder.set_title(env, title)?;
+        dialog_builder.set_title(env, title.as_char_sequence())?;
 
         // creating and showing the dialog must be done in the Java main thread
         let dialog_builder = env.new_global_ref(dialog_builder)?;
@@ -403,7 +399,7 @@ fn chooser_dialog<'a>(
             Ok(())
         })?;
 
-        if let Some(r) = wait_recv(&rx, app) {
+        if let Some(r) = wait_recv(&rx, app, in_android_main) {
             Ok(r.map(|i| choices[i as usize]))
         } else {
             let dialog = dialog_arc.lock().unwrap().take();
@@ -415,8 +411,12 @@ fn chooser_dialog<'a>(
     })
 }
 
-fn wait_recv<T>(rx: &std::sync::mpsc::Receiver<T>, app: Option<&AndroidApp>) -> Option<T> {
-    if let Some(app) = app {
+fn wait_recv<T>(
+    rx: &std::sync::mpsc::Receiver<T>,
+    app: &AndroidApp,
+    in_android_main: bool,
+) -> Option<T> {
+    if in_android_main {
         // it runs in the native main thread
         let mut on_stop = false;
         loop {
@@ -462,8 +462,8 @@ publish = false
 
 [dependencies]
 log = "0.4"
-jni-min-helper = "0.4.0"
-android-activity = { version = "0.6", features = ["native-activity"] }
+jni-min-helper = "0.4.1"
+android-activity = { version = "0.6.1", features = ["native-activity"] }
 android_logger = "0.15"
 
 [lib]

@@ -1,5 +1,13 @@
 # Changes
 
+## 0.4.1
+* Added `Intent::get_parcelable_extra` and `Intent::put_extra_parcelable`.
+* Removed custom `JCharSequence` binding in examples, because `jni` 0.22.4 added `JCharSequence` bindings.
+* Fixed the chooser dialog example for `android-activity` 0.6.1; noted about <https://github.com/rust-mobile/android-activity/issues/228> for the `android_context` function; removed the warning printed when `android_context` finds a null context pointer in `android_context` and tries to get the application context pointer from the activity thread, because the new 0.6.1 version of `android-activity` initializes the context pointer from the application context instead of the native activity.
+* Fixed a wrong JNI method signature in the internal function `get_activity_thread`.
+* Noted about `AndroidApp::run_on_java_main_thread` for `DynamicProxy::post_to_main_looper`.
+* Added `as_number` method in bindings of Java numeric wrappers.
+
 ## 0.4.0
 * Adapted to `jni` 0.22, introduced the usage of binding macros.
 * Removed convenient mappers for creating `AutoLocal` and clearing exception (the `no-proxy` cargo feature is removed as well), because `jni` 0.22 pushes and pops local reference frames automatically; exception handling of `jni_with_env` becomes consistent with <https://docs.rs/jni/0.22.3/jni/vm/struct.JavaVM.html#exception-handling>.

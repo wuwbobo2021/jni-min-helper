@@ -85,7 +85,7 @@ bind_java_type! {
         static fn parse_byte(arg0: JString) -> jbyte,
     },
     is_instance_of = {
-        JNumber,
+        number: JNumber,
     },
 }
 
@@ -105,7 +105,7 @@ bind_java_type! {
         static fn parse_short(arg0: JString) -> jshort,
     },
     is_instance_of = {
-        JNumber,
+        number: JNumber,
     },
 }
 
@@ -125,7 +125,7 @@ bind_java_type! {
         static fn parse_int(arg0: JString) -> jint,
     },
     is_instance_of = {
-        JNumber,
+        number: JNumber,
     },
 }
 
@@ -145,7 +145,7 @@ bind_java_type! {
         static fn parse_long(arg0: JString) -> jlong,
     },
     is_instance_of = {
-        JNumber,
+        number: JNumber,
     },
 }
 
@@ -165,7 +165,7 @@ bind_java_type! {
         static fn parse_float(arg0: JString) -> jfloat,
     },
     is_instance_of = {
-        JNumber,
+        number: JNumber,
     },
 }
 
@@ -185,7 +185,7 @@ bind_java_type! {
         static fn parse_double(arg0: JString) -> jdouble,
     },
     is_instance_of = {
-        JNumber,
+        number: JNumber,
     },
 }
 

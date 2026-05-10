@@ -119,6 +119,8 @@ type RustHandler = dyn for<'a> Fn(&mut Env<'a>, JMethod<'a>, JObjectArray<JObjec
 
 // This indicates the invoked proxy ID for the Rust handler; it should be `None` elsewhere.
 thread_local! {
+    // There's a false-positive Clippy bug: <https://github.com/rust-lang/rust-clippy/issues/13422>
+    #[cfg_attr(target_os = "android", allow(clippy::missing_const_for_thread_local))]
     static CURRENT_PROXY_ID: Cell<Option<i64>> = const { Cell::new(None) };
 }
 
@@ -298,6 +300,9 @@ impl DynamicProxy {
 impl DynamicProxy {
     /// Posts a `Runnable` for the Android main looper thread to do UI-related operations.
     /// Returns false on failure (usually because the looper is exiting).
+    ///
+    /// Please also consider using `AndroidApp::run_on_java_main_thread` if you are building
+    /// an application based on the `android-activity` crate.
     pub fn post_to_main_looper(
         runnable: impl Fn(&mut jni::Env) -> Result<(), Error> + Send + Sync + 'static,
     ) -> Result<bool, Error> {

@@ -123,7 +123,7 @@ impl<'local> DexClassLoader<'local> for JClassLoader<'local> {
             let dex_buffer =
                 unsafe { env.new_direct_byte_buffer(dex_data.as_ptr() as *mut _, dex_data.len()) }?;
             let dex_loader = InMemoryDexClassLoader::new(env, &dex_buffer, self)?;
-            JClassLoader::cast_local(env, dex_loader)
+            Ok(dex_loader.into())
         } else {
             // The dex data must be written in a file; this determines the output
             // directory path inside the application code cache directory.
@@ -158,28 +158,32 @@ impl<'local> DexClassLoader<'local> for JClassLoader<'local> {
                 JString::null(),
                 self,
             )?;
-            JClassLoader::cast_local(env, dex_loader)
+            Ok(dex_loader.into())
         }
     }
 }
 
-/// Gets the current `android.content.Context`, usually a reference of `NativeActivity`.
-/// This depends on crate `ndk_context`.
+/// Gets the current `android.content.Context` from [ndk_context](https://docs.rs/ndk-context),
+/// usually a reference of `android.app.Application` or `android.app.NativeActivity`.
+/// Please check the completed issue <https://github.com/rust-mobile/android-activity/issues/228>
+/// if you had expected a reference of an activity to be returned by this function.
 pub fn android_context() -> &'static JObject<'static> {
     get_android_context().as_ref()
 }
 
 pub(crate) fn get_android_context() -> &'static AndroidContext<'static> {
-    static ANDROID_CONTEXT: OnceLock<(Global<AndroidContext<'static>>, bool)> = OnceLock::new();
-    let (ctx, from_glue_crate) = ANDROID_CONTEXT.get_or_init(|| {
+    static ANDROID_CONTEXT: OnceLock<Global<AndroidContext<'static>>> = OnceLock::new();
+    let ctx = ANDROID_CONTEXT.get_or_init(|| {
         jni_with_env(|env| {
-            let ctx = ndk_context::android_context();
-            // Safety: as documented in `cargo-apk` example to obtain the context's JNI reference.
-            // It's set by `android_activity`, got from `ANativeActivity_onCreate()` entry, and it
-            // can be used across threads, thus it should be a global reference by itself.
-            let obj = unsafe { AndroidContext::from_raw(env, ctx.context().cast()) };
-            if !obj.is_null() {
-                Ok((env.new_global_ref(obj)?, true))
+            let ctx_raw_global = ndk_context::android_context().context() as jni::sys::jobject;
+            if !ctx_raw_global.is_null() {
+                // Safety: the context pointer initialized in `ndk_context` should be a raw global
+                // reference of `android.content.Context`, which can be casted to `jni::sys::jobject`.
+                // `Env::as_cast_raw` does not create an owned `Global` that deletes the reference on drop.
+                let ctx = unsafe {
+                    env.as_cast_raw::<jni::refs::Global<AndroidContext<'static>>>(&ctx_raw_global)?
+                };
+                env.new_global_ref(ctx.as_ref())
             } else {
                 let th = get_activity_thread(env)?;
                 let app = env
@@ -195,16 +199,11 @@ pub(crate) fn get_android_context() -> &'static AndroidContext<'static> {
                 if ctx.is_null() {
                     panic!("got null from ActivityThread.getApplication()");
                 }
-                Ok((ctx, false))
+                Ok(ctx)
             }
         })
         .unwrap()
     });
-    if !from_glue_crate {
-        // `warn!` doesn't work inside the closure for `get_or_init()`.
-        warn!("`ndk_context::android_context().context()` is null. Check the Android glue crate.");
-        warn!("Using `Application` (No `Activity` and UI availability); other crates may fail.");
-    }
     ctx.as_ref()
 }
 
@@ -212,7 +211,7 @@ fn get_activity_thread<'a>(env: &mut Env<'a>) -> Result<JObject<'a>, Error> {
     env.call_static_method(
         jni_str!("android/app/ActivityThread"),
         jni_str!("currentActivityThread"),
-        jni_sig!(() -> Landroid.app.ActivityThread),
+        jni_sig!(() -> android.app.ActivityThread),
         &[],
     )?
     .l()

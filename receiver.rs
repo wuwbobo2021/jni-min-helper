@@ -15,6 +15,7 @@ jni::bind_java_type! {
     pub Intent => "android.content.Intent",
     type_map = {
         AndroidContext => "android.content.Context",
+        AndroidParcelable => "android.os.Parcelable",
     },
     constructors {
         fn new(),
@@ -65,14 +66,6 @@ jni::bind_java_type! {
             name = "putExtra",
             sig = (name: JString, value: jint) -> Intent,
         },
-        fn put_extra_string {
-            name = "putExtra",
-            sig = (name: JString, value: JString) -> Intent,
-        },
-        fn put_extra_string_array {
-            name = "putExtra",
-            sig = (name: JString, value: JString[]) -> Intent,
-        },
         fn put_extra_long {
             name = "putExtra",
             sig = (name: JString, value: jlong) -> Intent,
@@ -81,6 +74,100 @@ jni::bind_java_type! {
             name = "putExtra",
             sig = (name: JString, value: jshort) -> Intent,
         },
+        fn put_extra_string {
+            name = "putExtra",
+            sig = (name: JString, value: JString) -> Intent,
+        },
+        fn put_extra_string_array {
+            name = "putExtra",
+            sig = (name: JString, value: JString[]) -> Intent,
+        },
+        priv fn put_extra_parcelable_internal {
+            name = "putExtra",
+            sig = (name: JString, value: AndroidParcelable) -> Intent,
+        }
+    },
+}
+
+jni::bind_java_type! {
+    AndroidParcelable => "android.os.Parcelable",
+}
+
+mod parcelable_extra {
+    use super::{AndroidParcelable, Intent};
+    use crate::android_api_level;
+    use jni::{
+        Env,
+        errors::Error,
+        objects::{JClass, JObject, JString},
+        refs::{Cast, Reference},
+    };
+    // TODO: remove these extra bindings when <https://github.com/jni-rs/jni-rs/issues/764> is resolved.
+    jni::bind_java_type! {
+        pub IntentApi32 => "android.content.Intent",
+        type_map = {
+            AndroidParcelable => "android.os.Parcelable",
+        },
+        methods {
+            // public @Nullable <T extends Parcelable> T getParcelableExtra(String name)
+            fn get_parcelable_extra {
+                name = "getParcelableExtra",
+                sig = (name: JString) -> AndroidParcelable,
+            },
+        },
+    }
+    jni::bind_java_type! {
+        pub IntentApi33 => "android.content.Intent",
+        methods {
+            // public @Nullable <T> T getParcelableExtra(@Nullable String name, @NonNull Class<T> clazz)
+            fn get_parcelable_extra {
+                name = "getParcelableExtra",
+                sig = (name: JString, class: JClass) -> JObject,
+            },
+        },
+    }
+    impl<'local> Intent<'local> {
+        pub fn put_extra_parcelable<'local_0, 'local_1>(
+            &self,
+            env: &mut Env,
+            name: impl AsRef<JString<'local_0>>,
+            value: impl AsRef<JObject<'local_1>>,
+        ) -> Result<(), Error> {
+            let value: Cast<'_, '_, AndroidParcelable> = env.as_cast(value.as_ref())?;
+            self.put_extra_parcelable_internal(env, name, value)?;
+            Ok(())
+        }
+
+        pub fn get_parcelable_extra<'env_local, 'local_0, 'local_1>(
+            &self,
+            env: &mut Env<'env_local>,
+            name: impl AsRef<JString<'local_0>>,
+            class: impl AsRef<JClass<'local_1>>,
+        ) -> Result<JObject<'env_local>, Error> {
+            if name.as_ref().is_null() {
+                return Err(Error::NullPtr(
+                    "null `name` provided for `get_parcelable_extra`",
+                ));
+            }
+            if class.as_ref().is_null() {
+                return Err(Error::NullPtr(
+                    "null `class` provided for `get_parcelable_extra`",
+                ));
+            }
+            if android_api_level() >= 33 {
+                // Safety: `Intent` and `IntentApi33` both map to `android.content.Intent`.
+                let intent: Cast<'_, '_, IntentApi33> = unsafe { env.as_cast_unchecked(self) };
+                intent.get_parcelable_extra(env, name, class)
+            } else {
+                // Safety: `Intent` and `IntentApi32` both map to `android.content.Intent`.
+                let intent: Cast<'_, '_, IntentApi32> = unsafe { env.as_cast_unchecked(self) };
+                let extra: JObject = intent.get_parcelable_extra(env, name).map(Into::into)?;
+                if !extra.is_null() && !env.is_instance_of(&extra, class.as_ref())? {
+                    return Err(Error::WrongObjectType);
+                }
+                Ok(extra)
+            }
+        }
     }
 }
 
@@ -188,10 +275,9 @@ impl BroadcastReceiver {
             let receiver_hdl = env.new_local_ref(proxy.as_ref())?;
             let receiver_hdl = env.cast_local::<BroadcastRecHdl>(receiver_hdl)?;
             let receiver = BroadcastRec::new(env, receiver_hdl)?;
-            let receiver = AndroidBroadcastReceiver::cast_local(env, receiver)?;
 
             Ok(Self {
-                receiver: env.new_global_ref(receiver)?,
+                receiver: env.new_global_ref(AndroidBroadcastReceiver::from(receiver))?,
                 proxy: Some(proxy),
                 forget: false,
             })
